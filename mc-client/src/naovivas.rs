@@ -182,6 +182,9 @@ pub struct Fx<'a> {
     pub glow: &'a mut HashMap<Tex, Geometry>,
     pub time: i64,
     pub cache: &'a mut Cache,
+    /// `renderModel`: o corpo sai (falso numa entidade invisível, que ainda desenha as camadas: cabeça, armadura e
+    /// item na mão, como no `RendererLivingEntity.doRender`).
+    pub body: bool,
 }
 
 /// Modelos assados que não mudam entre quadros.

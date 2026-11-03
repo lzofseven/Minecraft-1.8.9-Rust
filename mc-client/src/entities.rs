@@ -810,7 +810,7 @@ impl Entities {
         let white = self.textures.white(r);
         let (mut glow, mut out) = (HashMap::new(), HashMap::new());
         let Self { players, textures, cache, world_time, .. } = self;
-        let mut fx = crate::naovivas::Fx { cam, world, glow: &mut glow, time: *world_time, cache };
+        let mut fx = crate::naovivas::Fx { cam, world, glow: &mut glow, time: *world_time, cache, body: true };
         draw_model(&e, &mut fx, Vec3::ZERO, 1.0, FULL_LIGHT, 1.0, textures, r, jar, players, white, items, table, lights, &mut out);
         out.into_iter()
             .map(|(tex, mut geo)| {
@@ -1445,12 +1445,16 @@ impl Entities {
             let before = tint.map(|_| crate::fx::snapshot(&opaque));
             // Invisível: sumido; só o espectador vê, com alfa 0,15 (`renderModel` com `isInvisibleToPlayer` falso).
             let ghost = e.invisible() && living && *viewer_spectator;
-            if !e.invisible() || ghost {
+            // RendererLivingEntity.doRender: invisível pula só o renderModel; as camadas (cabeça no capacete,
+            // armadura, item na mão) continuam. É assim que os lobbies fazem as cabeças 3D girando (suportes de
+            // armadura invisíveis com uma cabeça) e os itens flutuando.
+            let layers_only = e.invisible() && !ghost && matches!(e.kind, Kind::Player { .. } | Kind::Object { kind: ARMOR_STAND, .. });
+            if !e.invisible() || ghost || layers_only {
                 let mut scratch: HashMap<Tex, Geometry> = HashMap::new();
                 let target = if ghost { &mut scratch } else { &mut opaque };
                 // `Entity.getBrightness`: luz no ponto dos olhos com o escurecimento do dia (light = [céu, bloco]).
                 let brightness = crate::hud_stats::brightness_at((light[1] / 17) as i32, (light[0] / 17) as i32, time);
-                draw_model(e, &mut crate::naovivas::Fx { cam, world, glow: &mut glow, time, cache }, p, partial, light, brightness, textures, r, jar, players, white, items, table, crate::models::WORLD_LIGHTS, target);
+                draw_model(e, &mut crate::naovivas::Fx { cam, world, glow: &mut glow, time, cache, body: !layers_only }, p, partial, light, brightness, textures, r, jar, players, white, items, table, crate::models::WORLD_LIGHTS, target);
                 if ghost {
                     for (tex, mut geo) in scratch {
                         geo.vertices.iter_mut().for_each(|v| v.color[3] = 38);
@@ -1947,7 +1951,9 @@ fn draw_model(
             }
             let y = if anim.sneak { pos.y - 0.125 } else { pos.y };
             let mat = living_matrix(Vec3::new(pos.x, y, pos.z), body, death, 0.9375);
-            m.emit(&mut sink_for(out, tex, tint, light, lights), &mat, &anim);
+            if fx.body {
+                m.emit(&mut sink_for(out, tex, tint, light, lights), &mat, &anim);
+            }
             if !players.get(uuid).is_some_and(|p| p.gamemode == 3) {
                 let worn = |i: usize| e.equipment[i].as_ref().map(Worn::from_slot);
                 let held = worn(0).map(|w| Worn { model: crate::first_person::entity_override(w.id, e.fishing, e.item_use.map(|u| u.1 - u.2)), ..w });
@@ -2011,7 +2017,7 @@ fn draw_model(
             m.emit(&mut sink_for(out, tex, tint, light, lights), &living_matrix(pos, body, death, scale));
         }
         Kind::Mob(id) => {
-            let mut cx = crate::mobs::Ctx { textures, r, jar, out, light, tint, items, table, brightness, lights };
+            let mut cx = crate::mobs::Ctx { textures, r, jar, out, light, tint, items, table, brightness, lights, body: fx.body };
             if crate::mobs::draw(e, *id, pos, t, &anim, body, death, &mut cx) {
                 return;
             }
@@ -2024,7 +2030,7 @@ fn draw_model(
         }
         Kind::Object { kind, .. } => {
             if matches!(*kind, 78 | 51) {
-                let mut cx = crate::mobs::Ctx { textures, r, jar, out, light, tint, items, table, brightness, lights };
+                let mut cx = crate::mobs::Ctx { textures, r, jar, out, light, tint, items, table, brightness, lights, body: fx.body };
                 if crate::mobs::draw_object(e, *kind, pos, t, body, &mut cx) {
                     return;
                 }
@@ -2167,6 +2173,19 @@ mod tests {
         assert!((e.yaw - 90.0).abs() < 1e-4);
         assert_eq!(e.increments, 0);
         assert_eq!(e.prev.x, 3.0);
+    }
+
+    #[test]
+    fn som_de_dano_igual_ao_java() {
+        let p = player_entity();
+        assert_eq!(hurt_sound(&p), Some(("game.player.hurt".to_string(), 1.0)));
+        let mut slime = Entity::new(2, Kind::Mob(55), [0; 3], 0.0, 0.0);
+        slime.meta.insert(16, MetaValue::Byte(4));
+        assert_eq!(hurt_sound(&slime), Some(("mob.slime.big".to_string(), 1.6)));
+        let mut quiet = player_entity();
+        quiet.meta.insert(4, MetaValue::Byte(1));
+        assert_eq!(hurt_sound(&quiet), None);
+        assert_eq!(hurt_sound(&Entity::new(3, Kind::Mob(94), [0; 3], 0.0, 0.0)), None);
     }
 
     #[test]
@@ -2495,5 +2514,60 @@ mod tests {
         assert_eq!(ents.list[&-200].pos, DVec3::new(1.5, 64.5, 2.5));
         assert_eq!(ents.list[&-201].leash_to, Some(-200));
         assert_eq!(ents.list[&-202].leash_to, Some(-2));
+    }
+}
+
+/// `getHurtSound` e `getSoundVolume` da entidade (classes do 1.8.9); `None` para quem não tem som de dano
+/// (lula, bruxa, objetos) ou está silenciosa (`Entity.isSilent`, metadado 4).
+pub fn hurt_sound(e: &Entity) -> Option<(String, f32)> {
+    if e.meta_byte(4) != 0 {
+        return None;
+    }
+    let s = |n: &str, v: f32| Some((n.to_string(), v));
+    match e.kind {
+        Kind::Player { .. } => s("game.player.hurt", 1.0),
+        Kind::Object { kind: ARMOR_STAND, .. } => s("game.neutral.hurt", 1.0),
+        Kind::Object { .. } => None,
+        Kind::Mob(id) => match id {
+            50 => s("mob.creeper.say", 1.0),
+            51 => s("mob.skeleton.hurt", 1.0),
+            52 | 59 => s("mob.spider.say", 1.0),
+            53 | 49 => s("game.hostile.hurt", 1.0),
+            54 => s("mob.zombie.hurt", 1.0),
+            55 | 62 => {
+                // EntitySlime: "mob.slime." + big/small pelo tamanho, volume 0.4 x tamanho.
+                let size = (e.meta_byte(16) as i32).max(1);
+                s(if size > 1 { "mob.slime.big" } else { "mob.slime.small" }, 0.4 * size as f32)
+            }
+            56 => s("mob.ghast.scream", 10.0),
+            57 => s("mob.zombiepig.zpighurt", 1.0),
+            58 => s("mob.endermen.hit", 1.0),
+            60 | 67 => s("mob.silverfish.hit", 1.0),
+            61 => s("mob.blaze.hit", 1.0),
+            63 => s("mob.enderdragon.hit", 5.0),
+            64 => s("mob.wither.hurt", 1.0),
+            65 => s("mob.bat.hurt", 0.1),
+            66 | 94 => None,
+            68 => {
+                let elder = e.meta_int(16) & 4 != 0;
+                s(if !e.in_water { "mob.guardian.land.hit" } else if elder { "mob.guardian.elder.hit" } else { "mob.guardian.hit" }, 1.0)
+            }
+            90 => s("mob.pig.say", 1.0),
+            91 => s("mob.sheep.say", 1.0),
+            92 | 96 => s("mob.cow.hurt", 0.4),
+            93 => s("mob.chicken.hurt", 1.0),
+            95 => s("mob.wolf.hurt", 0.4),
+            // EntityGolem.getHurtSound devolve "none" (sem som).
+            97 => None,
+            98 => s("mob.cat.hitt", 0.4),
+            99 => s("mob.irongolem.hit", 1.0),
+            100 => {
+                let t = e.meta_byte(19);
+                s(match t { 3 => "mob.horse.zombie.hit", 4 => "mob.horse.skeleton.hit", 1 | 2 => "mob.horse.donkey.hit", _ => "mob.horse.hit" }, 0.8)
+            }
+            101 => s("mob.rabbit.hurt", 1.0),
+            120 => s("mob.villager.hit", 1.0),
+            _ => s("game.neutral.hurt", 1.0),
+        },
     }
 }

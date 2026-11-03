@@ -62,13 +62,15 @@ pub fn armor_stand(e: &Entity, pos: Vec3, body: f32, cx: &mut Ctx) -> bool {
     pose_stand(&mut rig, e);
     let small = e.meta_byte(10) & 0x01 != 0;
     let sneak = e.sneaking();
-    let (tint, light) = (cx.tint, cx.light);
+    let (tint, light, show_body) = (cx.tint, cx.light, cx.body);
     let mut sink = cx.sink(tex, tint, 255, light);
     let tr = |y: f32| Mat4::from_translation(Vec3::new(0.0, y, 0.0));
     let stand = ["standRightSide", "standLeftSide", "standWaist", "standBase"].map(|n| rig.i(n));
     let (head, hw) = (rig.i("bipedHead"), rig.i("bipedHeadwear"));
     let rest = ["bipedBody", "bipedRightArm", "bipedLeftArm", "bipedRightLeg", "bipedLeftLeg"].map(|n| rig.i(n));
-    if small {
+    if !show_body {
+        // Invisível: só as camadas (abaixo).
+    } else if small {
         // ModelBiped.render do filhote e depois as peças do suporte pela metade.
         rig.emit(&mut sink, &(m * Mat4::from_scale(Vec3::splat(0.75)) * tr(1.0)), &[head]);
         let half = m * Mat4::from_scale(Vec3::splat(0.5)) * tr(1.5);

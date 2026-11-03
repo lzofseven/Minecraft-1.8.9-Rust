@@ -1063,6 +1063,16 @@ impl Game {
                         }
                     }
                     self.hud.entity_packet(&e, self.entities.own_id);
+                    // EntityLivingBase.handleStatusUpdate(2): o cliente toca o som de dano da própria entidade (além do
+                    // que o servidor mandar), com o tom (rand - rand) * 0.2 + 1.
+                    if let crate::entity_net::EntityPacket::Status { id, status: 2 } = &e {
+                        let own = Some(*id) == self.entities.own_id;
+                        let hurt = if own { Some(("game.player.hurt".to_string(), 1.0, self.player.pos)) } else { self.entities.list.get(id).and_then(|en| crate::entities::hurt_sound(en).map(|(n, v)| (n, v, en.pos))) };
+                        if let Some((name, vol, at)) = hurt {
+                            let pitch = (rand::random::<f32>() - rand::random::<f32>()) * 0.2 + 1.0;
+                            self.sound.play(&name, vol, pitch, at);
+                        }
+                    }
                     self.entities.handle(e, &mut self.player);
                 }
                 NetEvent::Sound(s) => self.sound.play(&s.name, s.volume, s.pitch, s.pos),

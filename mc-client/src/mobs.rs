@@ -400,6 +400,8 @@ pub struct Ctx<'a> {
     pub table: &'a mc_world::blocks::BlockTable,
     /// Luzes do `RenderHelper` no espaço do modelo (no mundo, `WORLD_LIGHTS`).
     pub lights: [Vec3; 2],
+    /// O corpo sai (ver `naovivas::Fx::body`).
+    pub body: bool,
 }
 
 impl Ctx<'_> {
