@@ -1,0 +1,26 @@
+[package]
+name = "mc-client"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+mc-protocol = { path = "../mc-protocol" }
+mc-net = { path = "../mc-net" }
+mc-world = { path = "../mc-world" }
+mc-render = { path = "../mc-render" }
+tokio.workspace = true
+rsa.workspace = true
+sha1.workspace = true
+rand.workspace = true
+num-bigint.workspace = true
+ureq.workspace = true
+serde_json.workspace = true
+hickory-resolver.workspace = true
+glam.workspace = true
+image.workspace = true
+winit.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+rodio.workspace = true
+ab_glyph = "0.2.32"
+zip.workspace = true

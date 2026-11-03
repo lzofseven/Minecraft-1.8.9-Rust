@@ -1,0 +1,210 @@
+// Gera mc-world/src/gen_items.rs. O corpo de registerItems() é copiado de RenderItem.java pelo gen.sh.
+import java.io.*;
+import java.lang.reflect.Field;
+import java.util.*;
+import javax.imageio.ImageIO;
+//IMPORTS
+import net.minecraft.client.renderer.ItemMeshDefinition;
+import net.minecraft.client.resources.model.ModelResourceLocation;
+import net.minecraft.entity.EntityList;
+import net.minecraft.init.Items;
+import net.minecraft.init.Blocks;
+import net.minecraft.potion.PotionHelper;
+import net.minecraft.block.BlockDirt;
+import net.minecraft.block.BlockDoublePlant;
+import net.minecraft.block.BlockFlower;
+import net.minecraft.block.BlockPlanks;
+import net.minecraft.block.BlockPrismarine;
+import net.minecraft.block.BlockQuartz;
+import net.minecraft.block.BlockRedSandstone;
+import net.minecraft.block.BlockSand;
+import net.minecraft.block.BlockSandStone;
+import net.minecraft.block.BlockSilverfish;
+import net.minecraft.block.BlockStone;
+import net.minecraft.block.BlockStoneBrick;
+import net.minecraft.block.BlockStoneSlab;
+import net.minecraft.block.BlockStoneSlabNew;
+import net.minecraft.block.BlockTallGrass;
+import net.minecraft.block.BlockWall;
+import net.minecraft.item.EnumDyeColor;
+import net.minecraft.item.ItemFishFood;
+
+public class GenItems {
+    static class Mesher {
+        TreeMap<Long, String> simple = new TreeMap<>();
+        LinkedHashMap<Item, ItemMeshDefinition> defs = new LinkedHashMap<>();
+        void register(Item item, int meta, ModelResourceLocation loc) {
+            simple.put(((long) Item.getIdFromItem(item) << 16) | meta, loc.getResourcePath());
+        }
+        void register(Item item, ItemMeshDefinition def) {
+            defs.put(item, def);
+        }
+    }
+
+    final Mesher itemModelMesher = new Mesher();
+
+    void registerBlock(Block b, int meta, String name) {
+        itemModelMesher.register(Item.getItemFromBlock(b), meta, new ModelResourceLocation(name, "inventory"));
+    }
+    void registerBlock(Block b, String name) { registerBlock(b, 0, name); }
+    void registerItem(Item i, int meta, String name) {
+        itemModelMesher.register(i, meta, new ModelResourceLocation(name, "inventory"));
+    }
+    void registerItem(Item i, String name) { registerItem(i, 0, name); }
+
+    void registerItems() {
+//BODY
+    }
+
+    static int[] readColormap(String jar, String entry) throws Exception {
+        try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar)) {
+            java.awt.image.BufferedImage img = ImageIO.read(z.getInputStream(z.getEntry(entry)));
+            int[] px = new int[65536];
+            img.getRGB(0, 0, 256, 256, px, 0, 256);
+            return px;
+        }
+    }
+
+    /// Dureza/material dos blocos (Block.registerBlocks) e força/colheita das ferramentas
+    /// (Item.getStrVsBlock, Item.canHarvestBlock, Material.isToolNotRequired).
+    static void writeTools(String path) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        sb.append("//! Gerado por scripts/gen_items/gen.sh: Block.registerBlocks (blockHardness, material) e as classes de\n");
+        sb.append("//! ferramenta do jogo original (ItemTool, ItemPickaxe, ItemAxe, ItemSpade, ItemSword, ItemShears). Não editar.\n\n");
+        Field hf = Block.class.getDeclaredField("blockHardness");
+        hf.setAccessible(true);
+        sb.append("/// Por id de bloco: (dureza, `Material.isToolNotRequired`). Dureza negativa = inquebrável.\n");
+        sb.append("pub const BLOCK_HARDNESS: [(f32, bool); 256] = [\n");
+        for (int id = 0; id < 256; id++) {
+            Block b = Block.getBlockById(id);
+            if (b == null || id != Block.getIdFromBlock(b)) {
+                sb.append("    (0.0, true),\n");
+                continue;
+            }
+            float h;
+            try { h = b.getBlockHardness(null, null); } catch (Throwable t) { h = hf.getFloat(b); }
+            sb.append(String.format(java.util.Locale.ROOT, "    (%sf32, %s), // %d\n", Float.toString(h), b.getMaterial().isToolNotRequired(), id));
+        }
+        sb.append("];\n\n");
+        StringBuilder str = new StringBuilder(), har = new StringBuilder();
+        for (int iid = 256; iid < 4096; iid++) {
+            Item it = Item.getItemById(iid);
+            if (it == null) continue;
+            ItemStack st = new ItemStack(it);
+            for (int id = 1; id < 256; id++) {
+                Block b = Block.getBlockById(id);
+                if (b == null || id != Block.getIdFromBlock(b)) continue;
+                float f = it.getStrVsBlock(st, b);
+                if (f != 1.0f) str.append(String.format(java.util.Locale.ROOT, "    (%d, %d, %sf32),\n", iid, id, Float.toString(f)));
+                if (it.canHarvestBlock(b)) har.append(String.format("    (%d, %d),\n", iid, id));
+            }
+        }
+        sb.append("/// (item, bloco, força): `Item.getStrVsBlock` quando diferente de 1.0.\n");
+        sb.append("pub const TOOL_STRENGTH: &[(u16, u8, f32)] = &[\n").append(str).append("];\n\n");
+        sb.append("/// (item, bloco): `Item.canHarvestBlock` verdadeiro.\n");
+        sb.append("pub const TOOL_HARVEST: &[(u16, u8)] = &[\n").append(har).append("];\n");
+        try (PrintWriter w = new PrintWriter(path)) { w.print(sb); }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Field reg = net.minecraft.init.Bootstrap.class.getDeclaredField("alreadyRegistered");
+        reg.setAccessible(true);
+        Block.registerBlocks();
+        reg.setBoolean(null, true);  // `Blocks`/`Items` exigem o Bootstrap; o resto dele depende do Forge
+        Item.registerItems();
+        net.minecraft.world.ColorizerGrass.setGrassBiomeColorizer(readColormap(args[0], "assets/minecraft/textures/colormap/grass.png"));
+        net.minecraft.world.ColorizerFoliage.setFoliageBiomeColorizer(readColormap(args[0], "assets/minecraft/textures/colormap/foliage.png"));
+
+        GenItems g = new GenItems();
+        g.registerItems();
+        StringBuilder sb = new StringBuilder();
+        sb.append("//! Gerado por scripts/gen_items/gen.sh executando RenderItem.registerItems, Item.getColorFromItemStack,\n");
+        sb.append("//! EntityList.entityEggs e PotionHelper.getLiquidColor do jogo original. Não editar.\n\n");
+
+        // (id, dano) -> modelo item/<nome>
+        sb.append("/// (id do item, dano, nome do modelo em `models/item`).\n");
+        sb.append("pub const ITEM_MODELS: &[(u16, u16, &str)] = &[\n");
+        for (Map.Entry<Long, String> e : g.itemModelMesher.simple.entrySet()) {
+            sb.append(String.format("    (%d, %d, \"%s\"),\n", e.getKey() >> 16, e.getKey() & 0xFFFF, e.getValue()));
+        }
+        sb.append("];\n\n");
+
+        // ItemMeshDefinition: modelo avaliado com dano 0 e com o bit de splash.
+        sb.append("/// ItemMeshDefinition: (id, modelo com dano 0, modelo com dano 16384).\n");
+        sb.append("pub const ITEM_MESH: &[(u16, &str, &str)] = &[\n");
+        for (Map.Entry<Item, ItemMeshDefinition> e : g.itemModelMesher.defs.entrySet()) {
+            String a = e.getValue().getModelLocation(new ItemStack(e.getKey(), 1, 0)).getResourcePath();
+            String b = e.getValue().getModelLocation(new ItemStack(e.getKey(), 1, 16384)).getResourcePath();
+            sb.append(String.format("    (%d, \"%s\", \"%s\"),\n", Item.getIdFromItem(e.getKey()), a, b));
+        }
+        sb.append("];\n\n");
+
+        // Item.isItemStackDamageable -> ItemModelMesher.getMetadata usa dano 0.
+        sb.append("/// Ids com `isItemStackDamageable()` (ItemModelMesher usa dano 0 para eles).\n");
+        sb.append("pub const ITEM_DAMAGEABLE: &[u16] = &[");
+        List<Integer> dmg = new ArrayList<>();
+        for (Object o : Item.itemRegistry) {
+            Item it = (Item) o;
+            if (it.getMaxDamage() > 0 && !it.getHasSubtypes()) dmg.add(Item.getIdFromItem(it));
+        }
+        Collections.sort(dmg);
+        for (int i : dmg) sb.append(i).append(", ");
+        sb.append("];\n\n");
+
+        // Cores por camada (tintindex 0..2) onde alguma difere de branco; poções e ovos à parte.
+        sb.append("/// (id, dano, cor da camada 0, 1, 2) quando alguma camada não é 0xFFFFFF.\n");
+        sb.append("pub const ITEM_COLORS: &[(u16, u16, [u32; 3])] = &[\n");
+        TreeSet<Long> keys = new TreeSet<>(g.itemModelMesher.simple.keySet());
+        for (Item it : g.itemModelMesher.defs.keySet()) keys.add(((long) Item.getIdFromItem(it) << 16));
+        int potion = Item.getIdFromItem(Items.potionitem), egg = Item.getIdFromItem(Items.spawn_egg);
+        for (long k : keys) {
+            int id = (int) (k >> 16), meta = (int) (k & 0xFFFF);
+            if (id == potion || id == egg) continue;
+            Item it = Item.getItemById(id);
+            int[] c = new int[3];
+            boolean any = false;
+            for (int p = 0; p < 3; p++) {
+                c[p] = it.getColorFromItemStack(new ItemStack(it, 1, meta), p) & 0xFFFFFF;
+                if (c[p] != 0xFFFFFF) any = true;
+            }
+            if (any) sb.append(String.format("    (%d, %d, [0x%06X, 0x%06X, 0x%06X]),\n", id, meta, c[0], c[1], c[2]));
+        }
+        sb.append("];\n\n");
+
+        // Ovos: EntityList.entityEggs (dano = id da entidade) -> camadas 0 e 1.
+        sb.append("/// ItemMonsterPlacer: (id da entidade, cor base, cor das pintas).\n");
+        sb.append("pub const EGG_COLORS: &[(u16, u32, u32)] = &[\n");
+        TreeMap<Integer, EntityList.EntityEggInfo> eggs = new TreeMap<>();
+        for (Object o : EntityList.entityEggs.values()) {
+            EntityList.EntityEggInfo ei = (EntityList.EntityEggInfo) o;
+            eggs.put(ei.spawnedID, ei);
+        }
+        for (Map.Entry<Integer, EntityList.EntityEggInfo> e : eggs.entrySet()) {
+            Item it = Items.spawn_egg;
+            int a = it.getColorFromItemStack(new ItemStack(it, 1, e.getKey()), 0) & 0xFFFFFF;
+            int b = it.getColorFromItemStack(new ItemStack(it, 1, e.getKey()), 1) & 0xFFFFFF;
+            sb.append(String.format("    (%d, 0x%06X, 0x%06X),\n", e.getKey(), a, b));
+        }
+        sb.append("];\n\n");
+
+        // Poções: ItemPotion.getColorFromItemStack(camada 0) = PotionHelper.getLiquidColor(dano, false).
+        // Escolhe a menor máscara de bits do dano que ainda reproduz a cor de todos os danos de 0 a 32767.
+        int[] pc = new int[32768];
+        for (int m = 0; m < 32768; m++) pc[m] = Items.potionitem.getColorFromItemStack(new ItemStack(Items.potionitem, 1, m), 0) & 0xFFFFFF;
+        int mask = 0x7FFF;
+        for (int bits = 1; bits <= 15; bits++) {
+            int mk = (1 << bits) - 1;
+            boolean ok = true;
+            for (int m = 0; m < 32768 && ok; m++) ok = pc[m] == pc[m & mk];
+            if (ok) { mask = mk; break; }
+        }
+        sb.append("/// Máscara do dano que determina a cor da poção (camada 0; a camada 1 é branca).\n");
+        sb.append(String.format("pub const POTION_MASK: u16 = 0x%X;\n", mask));
+        sb.append("pub const POTION_COLORS: &[u32] = &[");
+        for (int m = 0; m <= mask; m++) sb.append(String.format("%s0x%06X,", m % 8 == 0 ? "\n    " : " ", pc[m]));
+        sb.append("\n];\n");
+        try (PrintWriter w = new PrintWriter(args[1])) { w.print(sb); }
+        writeTools(args[2]);
+        System.out.println("ok " + g.itemModelMesher.simple.size() + " modelos -> " + args[1]);
+    }
+}

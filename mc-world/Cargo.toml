@@ -1,0 +1,13 @@
+[package]
+name = "mc-world"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+mc-protocol = { path = "../mc-protocol" }
+bytemuck.workspace = true
+serde_json.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+zip.workspace = true

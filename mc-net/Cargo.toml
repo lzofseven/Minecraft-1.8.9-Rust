@@ -1,0 +1,13 @@
+[package]
+name = "mc-net"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+mc-protocol = { path = "../mc-protocol" }
+thiserror.workspace = true
+flate2.workspace = true
+tokio.workspace = true
+rsa.workspace = true
+aes.workspace = true
+cfb8.workspace = true

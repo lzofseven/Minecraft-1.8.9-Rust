@@ -1,0 +1,52 @@
+// Gerado por scripts/gen_hud_tables.py a partir de Potion.java, Item.java e ItemArmor.java. Não editar.
+
+/// (id, nome do recurso, efeito ruim, cor do líquido, chave do .lang, índice do ícone em inventory.png ou -1)
+pub const POTIONS: &[(u8, &str, bool, u32, &str, i32)] = &[
+    (1, "speed", false, 8171462, "potion.moveSpeed", 0),
+    (2, "slowness", true, 5926017, "potion.moveSlowdown", 1),
+    (3, "haste", false, 14270531, "potion.digSpeed", 2),
+    (4, "mining_fatigue", true, 4866583, "potion.digSlowDown", 3),
+    (5, "strength", false, 9643043, "potion.damageBoost", 4),
+    (6, "instant_health", false, 16262179, "potion.heal", -1),
+    (7, "instant_damage", true, 4393481, "potion.harm", -1),
+    (8, "jump_boost", false, 2293580, "potion.jump", 10),
+    (9, "nausea", true, 5578058, "potion.confusion", 11),
+    (10, "regeneration", false, 13458603, "potion.regeneration", 7),
+    (11, "resistance", false, 10044730, "potion.resistance", 14),
+    (12, "fire_resistance", false, 14981690, "potion.fireResistance", 15),
+    (13, "water_breathing", false, 3035801, "potion.waterBreathing", 16),
+    (14, "invisibility", false, 8356754, "potion.invisibility", 8),
+    (15, "blindness", true, 2039587, "potion.blindness", 13),
+    (16, "night_vision", false, 2039713, "potion.nightVision", 12),
+    (17, "hunger", true, 5797459, "potion.hunger", 9),
+    (18, "weakness", true, 4738376, "potion.weakness", 5),
+    (19, "poison", true, 5149489, "potion.poison", 6),
+    (20, "wither", true, 3484199, "potion.wither", 17),
+    (21, "health_boost", false, 16284963, "potion.healthBoost", 18),
+    (22, "absorption", false, 2445989, "potion.absorption", 18),
+    (23, "saturation", false, 16262179, "potion.saturation", -1),
+];
+
+/// (id do item, nome, `damageReduceAmount`, tipo 0 capacete .. 3 botas)
+pub const ARMOR: &[(i16, &str, i32, u8)] = &[
+    (298, "leather_helmet", 1, 0),
+    (299, "leather_chestplate", 3, 1),
+    (300, "leather_leggings", 2, 2),
+    (301, "leather_boots", 1, 3),
+    (302, "chainmail_helmet", 2, 0),
+    (303, "chainmail_chestplate", 5, 1),
+    (304, "chainmail_leggings", 4, 2),
+    (305, "chainmail_boots", 1, 3),
+    (306, "iron_helmet", 2, 0),
+    (307, "iron_chestplate", 6, 1),
+    (308, "iron_leggings", 5, 2),
+    (309, "iron_boots", 2, 3),
+    (310, "diamond_helmet", 3, 0),
+    (311, "diamond_chestplate", 8, 1),
+    (312, "diamond_leggings", 6, 2),
+    (313, "diamond_boots", 3, 3),
+    (314, "golden_helmet", 2, 0),
+    (315, "golden_chestplate", 5, 1),
+    (316, "golden_leggings", 3, 2),
+    (317, "golden_boots", 1, 3),
+];

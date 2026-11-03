@@ -1,0 +1,14 @@
+[package]
+name = "mc-render"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+mc-world = { path = "../mc-world" }
+bytemuck.workspace = true
+glam.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+zip.workspace = true
+serde_json.workspace = true
+image.workspace = true
