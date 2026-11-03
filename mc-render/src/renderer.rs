@@ -330,8 +330,8 @@ pub struct Frame<'a> {
     /// Itens de `models` (o próprio jogador em terceira pessoa) cuja parte opaca é desenhada de novo depois de
     /// `overlay`: o corpo cobre os textos sem profundidade que estão atrás dele (hologramas e nomes).
     pub front: std::ops::Range<usize>,
-    /// Partículas (`EffectRenderer`), na ordem: `translucent` = camada sem escrita de profundidade.
-    pub particles: &'a [DrawItem],
+    /// Partículas (`EffectRenderer`) por instância, na ordem: `translucent` = camada sem escrita de profundidade.
+    pub particles: &'a crate::ParticleBatch,
     pub ui: &'a UiBatch,
     pub gui_scale: f32,
     pub crosshair: bool,
@@ -530,7 +530,7 @@ pub struct Renderer {
     translucent: wgpu::RenderPipeline,
     /// `blendFunc(1, 1)` das camadas de brilho (olhos, carga do creeper); id de textura com o bit `ADDITIVE`.
     additive: wgpu::RenderPipeline,
-    particle: wgpu::RenderPipeline,
+    particles: crate::particle_pass::ParticlePass,
     particle_nodepth: wgpu::RenderPipeline,
     label_nodepth: wgpu::RenderPipeline,
     /// `blendFunc(770, 1)` com `doPolygonOffset(-3, -3)` (TNT, raio): `Frame.additive`.
@@ -876,13 +876,7 @@ impl Renderer {
             }),
             depth_state(false, wgpu::CompareFunction::LessEqual),
         );
-        let particle = pipeline(
-            "vs_main",
-            "fs_particle",
-            &[vertex_layout.clone()],
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-            depth_state(true, wgpu::CompareFunction::LessEqual),
-        );
+        let particles = crate::particle_pass::ParticlePass::new(&device, &format!("{SHADER}{}", crate::particle_pass::WGSL), &bgl, ui_format, DEPTH);
         let particle_nodepth = pipeline(
             "vs_main",
             "fs_particle",
@@ -1006,7 +1000,7 @@ impl Renderer {
             translucent_blocks,
             translucent,
             additive,
-            particle,
+            particles,
             particle_nodepth,
             label_nodepth,
             additive_alpha,
@@ -1574,11 +1568,11 @@ impl Renderer {
         let glow = lote.push_all(f.additive);
         let overlay = lote.push_all(f.overlay);
         let front = lote.push_all(f.models.get(f.front.clone()).unwrap_or_default());
-        let particles = lote.push_all(f.particles);
         let hand = f.hand.map(|h| (lote.push_all(&h.models), lote.push_all(&h.overlays)));
         let gui = f.gui_models.map(|gm| lote.push_all(&gm.models)).unwrap_or_default();
         self.mesh_vb.upload(&self.device, &self.queue, bytemuck::cast_slice(&self.mesh_lote.verts));
         self.mesh_ib.upload(&self.device, &self.queue, bytemuck::cast_slice(&self.mesh_lote.indices));
+        self.particles.upload(&self.device, &self.queue, f.particles);
         let ui_count = f.ui.indices.len() as u32;
         self.ui_vb.upload(&self.device, &self.queue, bytemuck::cast_slice(&f.ui.vertices));
         self.ui_ib.upload(&self.device, &self.queue, bytemuck::cast_slice(&f.ui.indices));
@@ -1651,11 +1645,9 @@ impl Renderer {
             }
 
             // Partículas: depois das entidades e antes da água, camada a camada (como o EffectRenderer).
-            for (tex, no_depth, g) in &particles {
-                if let Some(bg) = self.bind_group(*tex) {
-                    pass.set_pipeline(if *no_depth { &self.particle_nodepth } else { &self.particle });
-                    pass.set_bind_group(0, bg, &[]);
-                    self.draw_mesh(&mut pass, g);
+            for d in &f.particles.draws {
+                if let Some(bg) = self.bind_group(d.tex) {
+                    self.particles.draw(&mut pass, d, bg);
                 }
             }
 

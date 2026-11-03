@@ -86,7 +86,11 @@ struct MeshDone {
 }
 
 /// Seções medidas por quadro (índices de `Prof::us`).
-const SECOES: [&str; 11] = ["ticks", "atmosfera", "hud", "entidades", "mao", "tiles", "particulas", "gui", "visiveis", "render", "espera_gpu"];
+const SECOES: [&str; 12] = [
+    "ticks", "atmosfera", "hud", "entidades", "mao", "tiles", "particulas", "gui", "visiveis", "render", "espera_gpu",
+    // parte de "ticks": o `EffectRenderer.updateEffects`
+    "tick_particulas",
+];
 
 /// MINE_RS_STATS=1: tempo médio por quadro de cada seção, em ms, impresso a cada segundo.
 struct Prof {
@@ -497,6 +501,10 @@ impl Game {
         self.player.teleport(DVec3::new(0.5, 64.0, 0.5), yaw, pitch);
         self.player.allow_flying = true;
         self.hud.health = 20.0;
+        // MINE_RS_TEST_PARTICULAS: semente fixa para as execuções darem a mesma imagem.
+        if crate::particles::Particles::test_hook().is_some() {
+            self.particles = crate::particles::Particles::new(0x5eed);
+        }
         // Servidor integrado: o tab desenha as cabeças.
         self.hud.tab.heads = true;
         if let Some(v) = env("TAB") {
@@ -1470,7 +1478,16 @@ impl Game {
     /// `EffectRenderer.updateEffects` e as fontes de partículas do cliente (blocos, corrida, poções).
     fn tick_particles(&mut self) {
         self.particles.setting = self.menu.settings.particles;
+        if let Some((n, t)) = crate::particles::Particles::test_hook() {
+            if self.hud.ticks >= t {
+                return;
+            }
+            let tick = self.hud.ticks;
+            penv!(self, env, { self.particles.test_fill(&env, n, tick) });
+        }
+        let t = Instant::now();
         penv!(self, env, { self.particles.tick(&env) });
+        self.prof.add(11, t);
         if !self.spawned {
             return;
         }
@@ -1877,9 +1894,13 @@ impl Game {
             Some(r) => {
                 let jar = &mut self.jar;
                 let mut load = |name: &str| jar.texture(name).map(|img| r.create_texture(img.width(), img.height(), img.as_raw()));
-                penv!(self, env, { self.particles.draw(&env, &cam, alpha as f32, &mut load) })
+                let pt = match crate::particles::Particles::test_hook() {
+                    Some((_, t)) if self.hud.ticks >= t => 0.5,
+                    _ => alpha as f32,
+                };
+                penv!(self, env, { self.particles.draw(&env, &cam, pt, &mut load) })
             }
-            None => Vec::new(),
+            None => Default::default(),
         };
         self.prof.add(6, t);
         let t = Instant::now();

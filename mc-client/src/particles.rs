@@ -4,13 +4,18 @@
 use std::collections::{HashMap, VecDeque};
 
 use glam::DVec3;
-use mc_render::{Camera, DrawItem, Tex};
+use mc_render::particle_pass::MIRRORED;
+use mc_render::{Camera, ParticleBatch, ParticleDraw, ParticleInstance, Tex};
 use mc_world::blocks::BlockTable;
 use mc_world::gen_shapes::{F_LIQUID, F_SOLID, FLAGS};
-use mc_world::mesh::{Geometry, Vertex, ATLAS_COLS};
+use mc_world::mesh::ATLAS_COLS;
 use mc_world::World;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
+
+/// A partir de quantas partículas por camada o tick e a montagem do quadro rodam em paralelo.
+const PAR_MIN: usize = 256;
 
 /// Literal `float` do Java promovido a `double` (`0.98F` vira `0.9800000190734863D`).
 const fn d(x: f32) -> f64 {
@@ -226,6 +231,13 @@ pub enum K {
     Breaking,
 }
 
+impl K {
+    /// Classes cujo `onUpdate` sorteia (`rand`): no tick paralelo elas rodam em ordem, com o gerador comum.
+    fn uses_rng(self) -> bool {
+        matches!(self, K::Rain | K::Lava | K::Huge)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Icon {
     None,
@@ -276,11 +288,29 @@ pub struct Fx {
 
 type R = StdRng;
 
-fn rd(r: &mut R) -> f64 {
+fn rd<G: Rng + ?Sized>(r: &mut G) -> f64 {
     r.gen::<f64>()
 }
-fn rf(r: &mut R) -> f32 {
+fn rf<G: Rng + ?Sized>(r: &mut G) -> f32 {
     r.gen::<f32>()
+}
+
+/// Gerador das partículas que não sorteiam nada no `onUpdate` (tick paralelo): nunca é lido.
+struct NoRng;
+
+impl rand::RngCore for NoRng {
+    fn next_u32(&mut self) -> u32 {
+        unreachable!("partícula sem sorteio no onUpdate")
+    }
+    fn next_u64(&mut self) -> u64 {
+        unreachable!("partícula sem sorteio no onUpdate")
+    }
+    fn fill_bytes(&mut self, _: &mut [u8]) {
+        unreachable!("partícula sem sorteio no onUpdate")
+    }
+    fn try_fill_bytes(&mut self, _: &mut [u8]) -> Result<(), rand::Error> {
+        unreachable!("partícula sem sorteio no onUpdate")
+    }
 }
 
 impl Fx {
@@ -443,7 +473,7 @@ impl Fx {
     }
 
     /// `onUpdate` de cada classe.
-    fn update(&mut self, env: &Env, r: &mut R, out: &mut Vec<Spawn>) {
+    fn update<G: Rng + ?Sized>(&mut self, env: &Env, r: &mut G, out: &mut Vec<Spawn>) {
         let in_water = |p: DVec3| matches!(env.st(fl(p.x), fl(p.y), fl(p.z)) >> 4, 8 | 9);
         match self.k {
             K::Digging | K::Breaking => {
@@ -1178,6 +1208,10 @@ pub struct Particles {
     /// Textura de partícula do item do S2A 36, preparada antes de `handle_particles`.
     item_sprite: Option<String>,
     item_lib: mc_world::model::ModelLib,
+    /// Quantas saíram do começo de cada camada pelo limite de 4000 (o tick paralelo acha os índices por aqui).
+    pops: [[u64; 2]; 4],
+    /// Reaproveitado entre quadros por `draw`.
+    draw_scratch: Vec<Option<(Tex, ParticleInstance)>>,
 }
 
 impl Default for Particles {
@@ -1197,6 +1231,8 @@ impl Particles {
             tex_ids: HashMap::new(),
             item_sprite: None,
             item_lib: Default::default(),
+            pops: [[0; 2]; 4],
+            draw_scratch: Vec::new(),
         }
     }
 
@@ -1221,6 +1257,7 @@ impl Particles {
         let list = &mut self.layers[f.layer as usize][j];
         if list.len() >= 4000 {
             list.pop_front();
+            self.pops[f.layer as usize][j] += 1;
         }
         list.push_back(f);
     }
@@ -1252,13 +1289,45 @@ impl Particles {
     pub fn tick(&mut self, env: &Env) {
         for l in 0..4 {
             for j in 0..2 {
+                // `onUpdate` das que não sorteiam nada, adiantado em paralelo sobre cópias (o mundo é só leitura).
+                let mut pre: Vec<Option<(Fx, Vec<Spawn>)>> = Vec::new();
+                if self.layers[l][j].len() >= PAR_MIN {
+                    let (world, table, player) = (env.world, env.table, env.player);
+                    self.layers[l][j]
+                        .par_iter()
+                        .with_min_len(64)
+                        .map_init(
+                            || Env { world, table, player, entity: &no_entity },
+                            |env, f| {
+                                if f.k.uses_rng() {
+                                    return None;
+                                }
+                                let (mut f, mut out) = (f.clone(), Vec::new());
+                                f.update(env, &mut NoRng, &mut out);
+                                Some((f, out))
+                            },
+                        )
+                        .collect_into_vec(&mut pre);
+                }
+                // O laço do Java, em ordem: o que nasce entra no fim e é atualizado no mesmo laço; passando
+                // de 4000, a mais antiga sai (`remove(0)`) e a seguinte fica sem atualizar neste tick.
+                // `seq` é a posição contada desde o começo do tick, para achar o resultado adiantado.
+                let pops0 = self.pops[l][j];
                 let mut i = 0;
                 while i < self.layers[l][j].len() {
-                    let mut out = Vec::new();
-                    {
-                        let Self { layers, rng, .. } = self;
-                        layers[l][j][i].update(env, rng, &mut out);
-                    }
+                    let seq = i + (self.pops[l][j] - pops0) as usize;
+                    let out = match pre.get_mut(seq).and_then(Option::take) {
+                        Some((f, out)) => {
+                            self.layers[l][j][i] = f;
+                            out
+                        }
+                        None => {
+                            let mut out = Vec::new();
+                            let Self { layers, rng, .. } = self;
+                            layers[l][j][i].update(env, rng, &mut out);
+                            out
+                        }
+                    };
                     for s in out {
                         self.spawn_type(env, s.id, s.pos, s.vel);
                     }
@@ -1293,6 +1362,42 @@ impl Particles {
             }
         }
         e.age += 1;
+    }
+
+    /// Gancho de carga `MINE_RS_TEST_PARTICULAS=n[@t]`: n partículas por tick na frente do jogador do
+    /// `--test-world` (metade de vários tipos na camada 0, metade em blocos quebrados na camada 1); no tick t
+    /// tudo para e o desenho usa pt = 0,5, para prints iguais entre execuções.
+    pub fn test_fill(&mut self, env: &Env, n: usize, tick: u64) {
+        const MIX: [i32; 13] = [26, 11, 27, 30, 9, 23, 13, 24, 29, 0, 19, 34, 37];
+        let h = |i: u64| {
+            let mut z = tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ i.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 30)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        if tick % 20 == 0 {
+            let por_camada: Vec<usize> = self.layers.iter().flatten().map(VecDeque::len).collect();
+            println!("[particulas] tick {tick}: {} {por_camada:?}", self.count());
+        }
+        let half = n / 2;
+        for i in 0..half as u64 {
+            let p = DVec3::new(-4.0 + h(i * 4) * 8.0, 64.5 + h(i * 4 + 1) * 4.0, 3.0 + h(i * 4 + 2) * 8.0);
+            let id = MIX[(i % MIX.len() as u64) as usize];
+            self.spawn(env, id, true, p, DVec3::new(0.0, 0.02, 0.0), &[1 << 12]);
+        }
+        for b in 0..(n - half).div_ceil(64) as u64 {
+            let (x, z) = ((h(1 << 20 | b) * 8.0) as i32 - 4, (h(1 << 21 | b) * 8.0) as i32 + 3);
+            self.block_destroy(env, (x, 65, z), [1u16, 2, 3, 4, 5, 17, 18][(b % 7) as usize] << 4);
+        }
+    }
+
+    /// `(n, t)` do `MINE_RS_TEST_PARTICULAS`.
+    pub fn test_hook() -> Option<(usize, u64)> {
+        static HOOK: std::sync::OnceLock<Option<(usize, u64)>> = std::sync::OnceLock::new();
+        *HOOK.get_or_init(|| {
+            let v = std::env::var("MINE_RS_TEST_PARTICULAS").ok()?;
+            let (n, t) = v.split_once('@').unwrap_or((&v, ""));
+            Some((n.parse().ok()?, t.parse().unwrap_or(u64::MAX)))
+        })
     }
 
     /// `emitParticleAtEntity` (S0B 4 = crítico, 5 = crítico mágico). O construtor já roda um `onUpdate`.
@@ -1653,11 +1758,14 @@ impl Particles {
         *self.tex_ids.entry(name.to_string()).or_insert_with(|| load(name))
     }
 
-    /// Geometria do quadro, na ordem do `EffectRenderer.renderParticles`.
-    pub fn draw(&mut self, env: &Env, cam: &Camera, partial: f32, load: &mut dyn FnMut(&str) -> Option<u32>) -> Vec<DrawItem> {
-        let mut items = Vec::new();
+    /// Instâncias do quadro, na ordem do `EffectRenderer.renderParticles`; com muitas partículas cada
+    /// camada é montada em paralelo (só leitura do mundo) e a ordem se mantém.
+    pub fn draw(&mut self, env: &Env, cam: &Camera, partial: f32, load: &mut dyn FnMut(&str) -> Option<u32>) -> ParticleBatch {
         let (yaw, pitch) = (cam.yaw * std::f32::consts::PI / 180.0, cam.pitch * std::f32::consts::PI / 180.0);
-        let rot = Rot { x: yaw.cos(), z: yaw.sin(), yz: -yaw.sin() * pitch.sin(), xy: yaw.cos() * pitch.sin(), xz: pitch.cos() };
+        let mut batch = ParticleBatch {
+            rot: [yaw.cos(), yaw.sin(), -yaw.sin() * pitch.sin(), yaw.cos() * pitch.sin(), pitch.cos()],
+            ..Default::default()
+        };
         let sheet = self.custom_tex("particle/particles", load);
         let explosion = self.custom_tex("entity/explosion", load);
         let sprites = self.sprites.clone();
@@ -1665,14 +1773,15 @@ impl Particles {
         for s in &sprites {
             sprite_tex.push(self.custom_tex(s, load));
         }
+        let (world, table, player) = (env.world, env.table, env.player);
+        let mut parts = std::mem::take(&mut self.draw_scratch);
         for l in [0usize, 1, 3] {
             for j in 0..2 {
                 let list = &self.layers[l][j];
                 if list.is_empty() {
                     continue;
                 }
-                let mut cur: Option<(Tex, Geometry)> = None;
-                for f in list {
+                let one = |env: &mut Env, f: &Fx| -> Option<(Tex, ParticleInstance)> {
                     let (tex, uv) = match (l, f.icon) {
                         (0, _) => (sheet.map(Tex::Custom), None),
                         (3, _) => (explosion.map(Tex::Custom), None),
@@ -1680,34 +1789,39 @@ impl Particles {
                         (_, Icon::Sprite(i)) => (sprite_tex[i as usize].map(Tex::Custom), Some(sprite_uv(f.jit))),
                         _ => (None, None),
                     };
-                    let Some(tex) = tex else { continue };
+                    let tex = tex?;
                     if f.k == K::Huge {
-                        continue;
+                        return None;
                     }
-                    if cur.as_ref().is_none_or(|(t, _)| *t != tex) {
-                        if let Some((t, g)) = cur.take() {
-                            items.push(DrawItem { tex: t, geo: g, translucent: j == 0 });
+                    Some((tex, f.instance(env, partial, uv)?))
+                };
+                list.par_iter()
+                    .with_min_len(PAR_MIN)
+                    .map_init(|| Env { world, table, player, entity: &no_entity }, one)
+                    .collect_into_vec(&mut parts);
+                let mut cur: Option<(Tex, u32)> = None;
+                for (tex, inst) in parts.drain(..).flatten() {
+                    let n = batch.instances.len() as u32;
+                    if cur.is_none_or(|(t, _)| t != tex) {
+                        if let Some((t, start)) = cur.take() {
+                            batch.draws.push(ParticleDraw { tex: t, translucent: j == 0, range: start..n });
                         }
-                        cur = Some((tex, Geometry::default()));
+                        cur = Some((tex, n));
                     }
-                    let geo = &mut cur.as_mut().unwrap().1;
-                    f.render(geo, env, &rot, partial, uv);
+                    batch.instances.push(inst);
                 }
-                if let Some((t, g)) = cur {
-                    items.push(DrawItem { tex: t, geo: g, translucent: j == 0 });
+                if let Some((t, start)) = cur {
+                    batch.draws.push(ParticleDraw { tex: t, translucent: j == 0, range: start..batch.instances.len() as u32 });
                 }
             }
         }
-        items
+        self.draw_scratch = parts;
+        batch
     }
 }
 
-struct Rot {
-    x: f32,
-    z: f32,
-    yz: f32,
-    xy: f32,
-    xz: f32,
+fn no_entity(_: i32) -> Option<EntView> {
+    None
 }
 
 /// UV do trecho 1/4 x 1/4 do ícone no atlas de blocos (`getInterpolatedU/V`).
@@ -1722,8 +1836,9 @@ fn sprite_uv(jit: [f32; 2]) -> [f32; 4] {
 }
 
 impl Fx {
-    /// `renderParticle`: quadrado virado para a câmera.
-    fn render(&self, geo: &mut Geometry, env: &Env, r: &Rot, pt: f32, icon_uv: Option<[f32; 4]>) {
+    /// `renderParticle`: o quadrado virado para a câmera vira uma instância; os cantos
+    /// (`interpPos` +/- `rotationX/XZ/Z/YZ/XY` vezes o tamanho) saem no vertex shader.
+    fn instance(&self, env: &Env, pt: f32, icon_uv: Option<[f32; 4]>) -> Option<ParticleInstance> {
         let p = self.prev + (self.pos - self.prev) * pt as f64;
         let c = [p.x as f32, p.y as f32, p.z as f32];
         let (sky, blk) = self.light16(env, pt);
@@ -1736,7 +1851,7 @@ impl Fx {
         let (u0, u1, v0, v1, s) = if self.k == K::Large {
             let n = (((self.counter as f32 + pt) * 15.0 / self.max_age as f32) as i32).max(0);
             if n > 15 {
-                return;
+                return None;
             }
             let u = (n % 4) as f32 / 4.0;
             let v = (n / 4) as f32 / 4.0;
@@ -1748,21 +1863,8 @@ impl Fx {
             let v = (self.tex_idx / 16) as f32 / 16.0;
             (u, u + 0.0624375, v, v + 0.0624375, 0.1 * self.render_scale(pt))
         };
-        let v = |sx: f32, sy: f32, sz: f32, uv: [f32; 2]| Vertex {
-            pos: [c[0] + sx, c[1] + sy, c[2] + sz],
-            uv,
-            color,
-            light,
-        };
-        let (rx, rz, ryz, rxy, rxz) = (r.x * s, r.z * s, r.yz * s, r.xy * s, r.xz * s);
-        let mirrored = icon_uv.is_some();
-        let uvs = if mirrored { [[u0, v1], [u0, v0], [u1, v0], [u1, v1]] } else { [[u1, v1], [u1, v0], [u0, v0], [u0, v1]] };
-        geo.quad_fixed([
-            v(-rx - ryz, -rxz, -rz - rxy, uvs[0]),
-            v(-rx + ryz, rxz, -rz + rxy, uvs[1]),
-            v(rx + ryz, rxz, rz + rxy, uvs[2]),
-            v(rx - ryz, -rxz, rz - rxy, uvs[3]),
-        ]);
+        let flags = if icon_uv.is_some() { MIRRORED } else { 0 };
+        Some(ParticleInstance { pos: c, size: s, uv: [u0, u1, v0, v1], color, light, flags })
     }
 }
 
@@ -1993,6 +2095,65 @@ mod tests {
             }
             let n = p.count();
             assert!((1800..2200).contains(&n), "{n}");
+        });
+    }
+
+    /// O laço do `updateEffectLayer` todo em série: a referência do tick paralelo.
+    fn tick_serial(p: &mut Particles, env: &Env) {
+        for l in 0..4 {
+            for j in 0..2 {
+                let mut i = 0;
+                while i < p.layers[l][j].len() {
+                    let mut out = Vec::new();
+                    {
+                        let Particles { layers, rng, .. } = &mut *p;
+                        layers[l][j][i].update(env, rng, &mut out);
+                    }
+                    for s in out {
+                        p.spawn_type(env, s.id, s.pos, s.vel);
+                    }
+                    i += 1;
+                }
+                p.layers[l][j].retain(|f| !f.dead);
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_tick_matches_serial() {
+        let mut w = open_world();
+        for x in -8..8 {
+            for z in -8..8 {
+                w.set_block(x, 1, z, 1 << 4);
+            }
+        }
+        with_env(&w, |env| {
+            // Camada 0 cheia, com lava soltando fumaça nela mesma (`remove(0)` no meio do laço) e chuva.
+            let fill = |p: &mut Particles, n: usize, t: usize| {
+                for i in 0..n {
+                    let id = [26, 11, 27, 30, 9, 23, 13, 29, 0, 19, 34, 39][(i + t) % 12];
+                    let k = (i * 7 + t * 13) as f64;
+                    let pos = DVec3::new((k * 0.37) % 12.0 - 6.0, 2.0 + (k * 0.11) % 3.0, (k * 0.53) % 12.0 - 6.0);
+                    p.spawn(env, id, true, pos, DVec3::new(0.0, -0.05, 0.0), &[]);
+                }
+                for b in 0..8 {
+                    p.block_destroy(env, (b - 4, 3, (t % 8) as i32 - 4), (1 + b as u16 % 3) << 4);
+                }
+            };
+            let (mut a, mut b) = (Particles::new(7), Particles::new(7));
+            fill(&mut a, 3990, 0);
+            fill(&mut b, 3990, 0);
+            let pops0 = a.pops[0][1];
+            for t in 1..60 {
+                a.tick(env);
+                tick_serial(&mut b, env);
+                assert_eq!(format!("{:?}", a.layers), format!("{:?}", b.layers), "tick {t}");
+                fill(&mut a, 300, t);
+                fill(&mut b, 300, t);
+            }
+            assert!(a.layer_len(0, 1) >= 3000 && a.layer_len(1, 1) >= 256);
+            assert!(a.pops[0][1] > pops0);
+            assert_eq!(a.rng.gen::<u64>(), b.rng.gen::<u64>());
         });
     }
 
