@@ -327,6 +327,9 @@ pub struct Frame<'a> {
     pub additive: &'a [DrawItem],
     /// Rótulos de nome: fundo e texto fraco sem teste de profundidade (`disableDepth`), depois de tudo do mundo.
     pub overlay: &'a [DrawItem],
+    /// Itens de `models` (o próprio jogador em terceira pessoa) cuja parte opaca é desenhada de novo depois de
+    /// `overlay`: o corpo cobre os textos sem profundidade que estão atrás dele (hologramas e nomes).
+    pub front: std::ops::Range<usize>,
     /// Partículas (`EffectRenderer`), na ordem: `translucent` = camada sem escrita de profundidade.
     pub particles: &'a [DrawItem],
     pub ui: &'a UiBatch,
@@ -1570,6 +1573,7 @@ impl Renderer {
         let dynamic = lote.push_all(f.models);
         let glow = lote.push_all(f.additive);
         let overlay = lote.push_all(f.overlay);
+        let front = lote.push_all(f.models.get(f.front.clone()).unwrap_or_default());
         let particles = lote.push_all(f.particles);
         let hand = f.hand.map(|h| (lote.push_all(&h.models), lote.push_all(&h.overlays)));
         let gui = f.gui_models.map(|gm| lote.push_all(&gm.models)).unwrap_or_default();
@@ -1684,6 +1688,19 @@ impl Renderer {
                     if let Some(bg) = self.bind_group(*tex) {
                         pass.set_bind_group(0, bg, &[]);
                         self.draw_mesh(&mut pass, g);
+                    }
+                }
+            }
+            // A mesma geometria com LessEqual passa só onde o corpo é o mais próximo: os textos sem profundidade
+            // atrás dele somem e o que está na frente (já com profundidade menor) fica.
+            if !overlay.is_empty() {
+                pass.set_pipeline(&self.cutout);
+                for (tex, translucent, g) in &front {
+                    if !translucent {
+                        if let Some(bg) = self.bind_group(*tex) {
+                            pass.set_bind_group(0, bg, &[]);
+                            self.draw_mesh(&mut pass, g);
+                        }
                     }
                 }
             }

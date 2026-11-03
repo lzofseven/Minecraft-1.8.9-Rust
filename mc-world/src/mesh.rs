@@ -515,97 +515,110 @@ pub fn mesh_section(p: &Padded, origin: [i32; 3], t: &BlockTable) -> MeshData {
     for y in 0..16 {
         for z in 0..16 {
             for x in 0..16 {
-                let st = p.block(x, y, z);
-                if st == 0 {
-                    continue;
-                }
-                let info = t.get(st);
-                let geo = match info.layer {
-                    Layer::Opaque => &mut m.opaque,
-                    Layer::CutoutMipped => &mut m.cutout_mipped,
-                    Layer::Cutout => &mut m.cutout,
-                    Layer::Translucent => &mut m.translucent,
-                };
-                if let Some(models) = &t.models {
-                    // Meta que não existe no jogo vira ar (BLOCK_STATE_IDS não tem o estado).
-                    if !t.valid(st) {
-                        continue;
-                    }
-                    if models.has(st) {
-                        let wpos = [origin[0] + x, origin[1] + y, origin[2] + z];
-                        let nb = |dx: i32, dy: i32, dz: i32| p.block(x + dx, y + dy, z + dz);
-                        let bits = if states::dyn_count(st >> 4) > 1 { states::actual_bits(t, st, wpos, &nb) } else { 0 };
-                        if let Some(w) = models.get(st, bits) {
-                            let model = w.pick(wpos[0], wpos[1], wpos[2]);
-                            let ctx = Ctx { p, t };
-                            ctx.render_model(geo, st, [x, y, z], wpos, model);
-                            continue;
-                        }
-                    }
-                }
-                let base = [(origin[0] + x) as f32, (origin[1] + y) as f32, (origin[2] + z) as f32];
-                let own = max_light(p.light(x, y, z), p.light(x, y + 1, z));
-                match &info.model {
-                    Model::Air | Model::Invisible | Model::Unsupported => {}
-                    Model::Cross => cross(geo, base, info.tex[0], tint_rgba(info.tint, 1.0), flat(own)),
-                    Model::DoublePlant => {
-                        let upper = st & 8 != 0;
-                        let kind = if upper { p.block(x, y - 1, z) & 7 } else { st & 7 } as usize;
-                        let tex = t.double_plant[kind.min(5)][upper as usize];
-                        let tint = if kind == 2 || kind == 3 { 0x91BD59 } else { 0xFFFFFF };
-                        cross(geo, base, tex, tint_rgba(tint, 1.0), flat(own));
-                    }
-                    Model::Liquid { lava } => {
-                        crate::fluid::render_fluid(geo, p, t, [x, y, z], [origin[0] + x, origin[1] + y, origin[2] + z], *lava);
-                    }
-                    _ => {
-                        boxes.clear();
-                        t.boxes(st, &|dx, dy, dz| p.block(x + dx, y + dy, z + dz), &mut boxes);
-                        let tex = match &info.model {
-                            Model::Door { upper } if st & 8 != 0 => [*upper; 6],
-                            _ => info.tex,
-                        };
-                        // Luz suave só para blocos opacos e inteiros (como o jogo faz).
-                        let smooth = info.full_opaque || (info.layer != Layer::Translucent && boxes.len() == 1 && boxes[0] == Aabb::FULL);
-                        for b in &boxes {
-                            let lo = b.min.map(|v| v as f32 / 16.0);
-                            let hi = b.max.map(|v| v.min(16) as f32 / 16.0);
-                            for (f, d) in DIRS.iter().enumerate() {
-                                let on_edge = match f {
-                                    0 => b.min[1] == 0,
-                                    1 => b.max[1] >= 16,
-                                    2 => b.min[2] == 0,
-                                    3 => b.max[2] >= 16,
-                                    4 => b.min[0] == 0,
-                                    _ => b.max[0] >= 16,
-                                };
-                                let (nx, ny, nz) = (x + d[0], y + d[1], z + d[2]);
-                                if on_edge {
-                                    let n = p.block(nx, ny, nz);
-                                    if t.get(n).full_opaque || (info.cull_same && n >> 4 == st >> 4) {
-                                        continue;
-                                    }
-                                }
-                                let rgba = tint_rgba(tint_for(info, f), SHADE[f]);
-                                if smooth && on_edge {
-                                    face(geo, f, lo, hi, base, tex[f], rgba, &|c| smooth_corner(p, t, [x, y, z], f, c));
-                                } else {
-                                    let mut l = p.light(nx, ny, nz);
-                                    if !on_edge {
-                                        l = max_light(l, own);
-                                    }
-                                    let l = flat(l);
-                                    face(geo, f, lo, hi, base, tex[f], rgba, &|_| l);
-                                }
-                            }
-                        }
-                    }
-                }
+                mesh_cell(p, origin, t, x, y, z, &mut m, &mut boxes);
             }
         }
     }
     m.visibility = section_visibility(p, t);
     m
+}
+
+/// Só o bloco da célula local (x, y, z), com os vizinhos do `Padded` para a oclusão, a luz suave e o corte de
+/// faces (`BlockRendererDispatcher.renderBlock` de um bloco, como o `RenderFallingBlock` faz). Sem visibilidade.
+pub fn mesh_one(p: &Padded, origin: [i32; 3], t: &BlockTable, cell: [i32; 3]) -> MeshData {
+    let mut m = MeshData::default();
+    mesh_cell(p, origin, t, cell[0], cell[1], cell[2], &mut m, &mut Vec::new());
+    m
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mesh_cell(p: &Padded, origin: [i32; 3], t: &BlockTable, x: i32, y: i32, z: i32, m: &mut MeshData, boxes: &mut Vec<Aabb>) {
+    let st = p.block(x, y, z);
+    if st == 0 {
+        return;
+    }
+    let info = t.get(st);
+    let geo = match info.layer {
+        Layer::Opaque => &mut m.opaque,
+        Layer::CutoutMipped => &mut m.cutout_mipped,
+        Layer::Cutout => &mut m.cutout,
+        Layer::Translucent => &mut m.translucent,
+    };
+    if let Some(models) = &t.models {
+        // Meta que não existe no jogo vira ar (BLOCK_STATE_IDS não tem o estado).
+        if !t.valid(st) {
+            return;
+        }
+        if models.has(st) {
+            let wpos = [origin[0] + x, origin[1] + y, origin[2] + z];
+            let nb = |dx: i32, dy: i32, dz: i32| p.block(x + dx, y + dy, z + dz);
+            let bits = if states::dyn_count(st >> 4) > 1 { states::actual_bits(t, st, wpos, &nb) } else { 0 };
+            if let Some(w) = models.get(st, bits) {
+                let model = w.pick(wpos[0], wpos[1], wpos[2]);
+                let ctx = Ctx { p, t };
+                ctx.render_model(geo, st, [x, y, z], wpos, model);
+                return;
+            }
+        }
+    }
+    let base = [(origin[0] + x) as f32, (origin[1] + y) as f32, (origin[2] + z) as f32];
+    let own = max_light(p.light(x, y, z), p.light(x, y + 1, z));
+    match &info.model {
+        Model::Air | Model::Invisible | Model::Unsupported => {}
+        Model::Cross => cross(geo, base, info.tex[0], tint_rgba(info.tint, 1.0), flat(own)),
+        Model::DoublePlant => {
+            let upper = st & 8 != 0;
+            let kind = if upper { p.block(x, y - 1, z) & 7 } else { st & 7 } as usize;
+            let tex = t.double_plant[kind.min(5)][upper as usize];
+            let tint = if kind == 2 || kind == 3 { 0x91BD59 } else { 0xFFFFFF };
+            cross(geo, base, tex, tint_rgba(tint, 1.0), flat(own));
+        }
+        Model::Liquid { lava } => {
+            crate::fluid::render_fluid(geo, p, t, [x, y, z], [origin[0] + x, origin[1] + y, origin[2] + z], *lava);
+        }
+        _ => {
+            boxes.clear();
+            t.boxes(st, &|dx, dy, dz| p.block(x + dx, y + dy, z + dz), boxes);
+            let tex = match &info.model {
+                Model::Door { upper } if st & 8 != 0 => [*upper; 6],
+                _ => info.tex,
+            };
+            // Luz suave só para blocos opacos e inteiros (como o jogo faz).
+            let smooth = info.full_opaque || (info.layer != Layer::Translucent && boxes.len() == 1 && boxes[0] == Aabb::FULL);
+            for b in boxes.iter() {
+                let lo = b.min.map(|v| v as f32 / 16.0);
+                let hi = b.max.map(|v| v.min(16) as f32 / 16.0);
+                for (f, d) in DIRS.iter().enumerate() {
+                    let on_edge = match f {
+                        0 => b.min[1] == 0,
+                        1 => b.max[1] >= 16,
+                        2 => b.min[2] == 0,
+                        3 => b.max[2] >= 16,
+                        4 => b.min[0] == 0,
+                        _ => b.max[0] >= 16,
+                    };
+                    let (nx, ny, nz) = (x + d[0], y + d[1], z + d[2]);
+                    if on_edge {
+                        let n = p.block(nx, ny, nz);
+                        if t.get(n).full_opaque || (info.cull_same && n >> 4 == st >> 4) {
+                            continue;
+                        }
+                    }
+                    let rgba = tint_rgba(tint_for(info, f), SHADE[f]);
+                    if smooth && on_edge {
+                        face(geo, f, lo, hi, base, tex[f], rgba, &|c| smooth_corner(p, t, [x, y, z], f, c));
+                    } else {
+                        let mut l = p.light(nx, ny, nz);
+                        if !on_edge {
+                            l = max_light(l, own);
+                        }
+                        let l = flat(l);
+                        face(geo, f, lo, hi, base, tex[f], rgba, &|_| l);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Visibilidade da seção, como `RenderChunk.rebuildChunk`: os blocos opacos vão para o `VisGraph`,

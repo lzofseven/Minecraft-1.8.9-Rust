@@ -1783,6 +1783,7 @@ impl Game {
         self.entities.entity_shadows = self.menu.settings.entity_shadows;
         self.entities.viewer_spectator = self.player.spectator;
         let t = Instant::now();
+        let mut front = 0..0;
         let mut models = match &mut self.renderer {
             Some(r) => {
                 self.entities.world_time = self.time_of_day.abs();
@@ -1834,7 +1835,9 @@ impl Game {
                     hand = Some(mc_render::HandPass { proj, models, overlays });
                 }
             } else {
+                let start = models.len();
                 models.extend(self.local_model(alpha as f32, None, light));
+                front = start..models.len();
                 // Render.doRenderShadowAndFire do próprio jogador (entityShadows e não invisível).
                 if self.entities.entity_shadows && self.hud.track.flags & 0x20 == 0 {
                     let pos = self.player.prev.lerp(self.player.pos, alpha);
@@ -1966,7 +1969,7 @@ impl Game {
             visible_sections(&sc)
         });
         self.prof.add(8, t);
-        let frame = Frame { cam: &cam, hand: hand.as_ref(), sky: &sky, sky_draws: &atm.sky_draws, weather_draws: &atm.weather_draws, late_draws: &atm.late_draws, models: &models, additive: &self.entities.additive, overlay: &self.entities.overlay, particles: &particles, ui: &self.ui, gui_scale, crosshair, gui_models: gui_models.as_ref(), visible: visible.as_ref() };
+        let frame = Frame { cam: &cam, hand: hand.as_ref(), sky: &sky, sky_draws: &atm.sky_draws, weather_draws: &atm.weather_draws, late_draws: &atm.late_draws, models: &models, additive: &self.entities.additive, overlay: &self.entities.overlay, front: front.clone(), particles: &particles, ui: &self.ui, gui_scale, crosshair, gui_models: gui_models.as_ref(), visible: visible.as_ref() };
         let t = Instant::now();
         // MINE_RS_PRINT_DIR (testes no modo fora da tela): o arquivo "pedido" com um nome vira <nome>.png lido da GPU.
         if let (Some(dir), Some(r)) = (&self.print_dir, &mut self.renderer) {

@@ -269,13 +269,10 @@ pub fn draw(e: &Entity, pos: Vec3, cx: &mut Cx) -> bool {
             emit_stack(cx, id, dmg, m, true, light);
             true
         }
-        TNT => {
-            draw_tnt(e, pos, cx);
-            true
-        }
-        FALLING_BLOCK => {
-            draw_falling(e, pos, data, cx);
-            true
+        TNT | FALLING_BLOCK => {
+            let white = cx.textures.white(cx.r);
+            let pure = Pure { t: cx.t, light: cx.light, time: cx.time, white, world: cx.world, table: cx.table };
+            draw_pure(e, pos, &pure, cx.out, cx.glow)
         }
         BOAT => {
             draw_boat(e, pos, cx);
@@ -480,7 +477,33 @@ pub fn tnt_scale(fuse: i32, t: f32) -> f32 {
     }
 }
 
-fn draw_tnt(e: &Entity, pos: Vec3, cx: &mut Cx) {
+/// O que o desenho das entidades "puras" (TNT, bloco caindo) usa: nada que mude, então podem ser desenhadas em
+/// paralelo (`Entities::draw` com muitas delas).
+pub struct Pure<'a> {
+    pub t: f32,
+    pub light: [u8; 4],
+    pub time: i64,
+    pub white: u32,
+    pub world: &'a World,
+    pub table: &'a BlockTable,
+}
+
+/// Entidades que só leem o mundo e a tabela de blocos.
+pub fn is_pure(kind: u8) -> bool {
+    matches!(kind, TNT | FALLING_BLOCK)
+}
+
+/// `RenderTNTPrimed` e `RenderFallingBlock`.
+pub fn draw_pure(e: &Entity, pos: Vec3, cx: &Pure, out: &mut HashMap<Tex, Geometry>, glow: &mut HashMap<Tex, Geometry>) -> bool {
+    match e.kind {
+        Kind::Object { kind: TNT, .. } => draw_tnt(e, pos, cx, out, glow),
+        Kind::Object { kind: FALLING_BLOCK, data } => draw_falling(e, pos, data, cx, out),
+        _ => return false,
+    }
+    true
+}
+
+fn draw_tnt(e: &Entity, pos: Vec3, cx: &Pure, out: &mut HashMap<Tex, Geometry>, glow: &mut HashMap<Tex, Geometry>) {
     let fuse = 80 - e.obj.fixed_age.unwrap_or(e.age as i32);
     let t = cx.t;
     let mut m = tr(pos.x, pos.y + 0.5, pos.z);
@@ -488,12 +511,12 @@ fn draw_tnt(e: &Entity, pos: Vec3, cx: &mut Cx) {
     m *= Mat4::from_scale(Vec3::splat(s));
     let base = m * tr(-0.5, -0.5, 0.5) * rot(90.0, 0.0, 1.0, 0.0);
     let state = 46 << 4;
-    emit_block(cx.out.entry(Tex::Blocks).or_default(), cx.table, state, &base, brightness(cx.light, cx.time), None, cx.light);
+    emit_block(out.entry(Tex::Blocks).or_default(), cx.table, state, &base, brightness(cx.light, cx.time), None, cx.light);
     if fuse / 5 % 2 == 0 {
         let a = (1.0 - (fuse as f32 - t + 1.0) / 100.0) * 0.8;
-        let white = cx.textures.white(cx.r);
+        let white = cx.white;
         let flash = m * tr(-0.5, -0.5, 0.5) * rot(90.0, 0.0, 1.0, 0.0) * tr(0.0, 0.0, 1.0) * rot(90.0, 0.0, 1.0, 0.0);
-        emit_block(cx.glow.entry(Tex::Custom(white)).or_default(), cx.table, state, &flash, 1.0, Some((a.clamp(0.0, 1.0) * 255.0) as u8), FULL_LIGHT);
+        emit_block(glow.entry(Tex::Custom(white)).or_default(), cx.table, state, &flash, 1.0, Some((a.clamp(0.0, 1.0) * 255.0) as u8), FULL_LIGHT);
     }
 }
 
@@ -517,7 +540,7 @@ fn cell_light(world: &World, x: i32, y: i32, z: i32) -> u8 {
 
 /// `RenderFallingBlock`: o modelo do bloco com a luz suave e a oclusão do mundo em volta do `BlockPos` da
 /// entidade (o mesmo gerador de malha do terreno, numa cópia pequena), centrado na posição da entidade.
-fn draw_falling(e: &Entity, pos: Vec3, data: i32, cx: &mut Cx) {
+fn draw_falling(e: &Entity, pos: Vec3, data: i32, cx: &Pure, out: &mut HashMap<Tex, Geometry>) {
     let state = falling_state(data);
     if !cx.table.models.as_ref().is_some_and(|m| m.has(state)) {
         return;
@@ -526,21 +549,30 @@ fn draw_falling(e: &Entity, pos: Vec3, data: i32, cx: &mut Cx) {
     if cx.world.block(bp[0], bp[1], bp[2]) == state {
         return;
     }
-    let mut p = Padded::new(if cx.world.has_sky { 0xF0 } else { 0 });
-    for dy in -3..=3 {
-        for dz in -3..=3 {
-            for dx in -3..=3 {
-                let i = Padded::idx(8 + dx, 8 + dy, 8 + dz);
-                p.blocks[i] = cx.world.block(bp[0] + dx, bp[1] + dy, bp[2] + dz);
-                p.light[i] = cell_light(cx.world, bp[0] + dx, bp[1] + dy, bp[2] + dz);
+    // Só o bloco da entidade é montado; os 26 vizinhos dão a oclusão, a luz suave e o corte de faces (antes a
+    // cópia 7x7x7 inteira virava malha a cada quadro: o chão em volta saía junto, deslocado, e 1000 blocos caindo
+    // custavam ~200 ms por quadro). O `Padded` é reaproveitado por thread: só as 27 células lidas são regravadas.
+    thread_local! {
+        static PADDED: std::cell::RefCell<Option<Padded>> = const { std::cell::RefCell::new(None) };
+    }
+    let mesh = PADDED.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let p = cell.get_or_insert_with(|| Padded::new(0));
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let i = Padded::idx(8 + dx, 8 + dy, 8 + dz);
+                    p.blocks[i] = cx.world.block(bp[0] + dx, bp[1] + dy, bp[2] + dz);
+                    p.light[i] = cell_light(cx.world, bp[0] + dx, bp[1] + dy, bp[2] + dz);
+                }
             }
         }
-    }
-    p.blocks[Padded::idx(8, 8, 8)] = state;
-    let mesh = mc_world::mesh::mesh_section(&p, [bp[0] - 8, bp[1] - 8, bp[2] - 8], cx.table);
+        p.blocks[Padded::idx(8, 8, 8)] = state;
+        mc_world::mesh::mesh_one(p, [bp[0] - 8, bp[1] - 8, bp[2] - 8], cx.table, [8, 8, 8])
+    });
     // setTranslation(-x - 0.5, -y, -z - 0.5) e depois o translate da posição.
     let d = pos - Vec3::new(bp[0] as f32 + 0.5, bp[1] as f32, bp[2] as f32 + 0.5);
-    let geo = cx.out.entry(Tex::Blocks).or_default();
+    let geo = out.entry(Tex::Blocks).or_default();
     let base = geo.vertices.len() as u32;
     geo.vertices.extend(mesh.opaque.vertices.iter().map(|v| Vertex { pos: [v.pos[0] + d.x, v.pos[1] + d.y, v.pos[2] + d.z], ..*v }));
     geo.indices.extend(mesh.opaque.indices.iter().map(|i| i + base));
@@ -1295,16 +1327,26 @@ fn arrow_tick(e: &mut Entity, world: &mc_world::World, table: &BlockTable) {
 }
 
 /// Gancho de teste `MINE_RS_TEST_OBJ=item:264,item:1:0:40,xp:20,flecha,bola,...`: lista de entidades.
+/// `N*item` repete o item N vezes (teste de carga, ex. `1000*tnt:80`); com muitos a grade fica quadrada.
 pub fn test_entities(spec: &str) -> Vec<Entity> {
     let mut out = Vec::new();
-    for (n, item) in spec.split(',').filter(|s| !s.is_empty()).enumerate() {
+    let items: Vec<&str> = spec
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .flat_map(|s| match s.split_once('*') {
+            Some((n, it)) => std::iter::repeat_n(it, n.trim().parse().unwrap_or(1)),
+            None => std::iter::repeat_n(s, 1),
+        })
+        .collect();
+    let cols = (items.len() as f64).sqrt().ceil().max(6.0) as usize;
+    for (n, item) in items.into_iter().enumerate() {
         let mut it = item.split(':');
         let name = it.next().unwrap_or("").trim();
         let rest: Vec<&str> = it.collect();
         let a: Vec<i32> = rest.iter().filter_map(|v| v.trim().parse().ok()).collect();
         let arg = |i: usize, d: i32| a.get(i).copied().unwrap_or(d);
-        let (col, row) = ((n % 6) as f64, (n / 6) as f64);
-        let (x, z) = (0.5 + (col - 2.5) * 1.5, 4.0 + row * 2.0);
+        let (col, row) = ((n % cols) as f64, (n / cols) as f64);
+        let (x, z) = (0.5 + (col - (cols as f64 - 1.0) / 2.0) * 1.5, 4.0 + row * 2.0);
         let fixed = [(x * 32.0) as i32, (64.0 * 32.0) as i32, (z * 32.0) as i32];
         let id = -300 - n as i32;
         let (kind, data) = match name {

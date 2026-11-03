@@ -627,6 +627,32 @@ pub struct NameBoard {
     pub below: Option<(String, HashMap<String, i32>)>,
 }
 
+/// A partir de quantas entidades o tick roda em paralelo.
+const PARALLEL_TICK: usize = 256;
+/// Modelo, sombra e fogo das entidades puras (TNT, bloco caindo), depois do laço principal. Dividir isto entre os
+/// núcleos foi medido e saiu mais lento (juntar as partes custa mais que montar), então fica em série.
+#[allow(clippy::too_many_arguments)]
+fn draw_pure_batch(list: &[(&Entity, Vec3, DVec3, f32, [u8; 4])], opaque: &mut HashMap<Tex, Geometry>, glow: &mut HashMap<Tex, Geometry>, partial: f32, time: i64, white: u32, world: &World, table: &mc_world::blocks::BlockTable, shadow_tex: Option<u32>, view_yaw: f32) {
+    let one = |(e, p, pos, d2, light): &(&Entity, Vec3, DVec3, f32, [u8; 4]), out: &mut HashMap<Tex, Geometry>, gl: &mut HashMap<Tex, Geometry>| {
+        let cx = crate::naovivas::Pure { t: partial, light: *light, time, white, world, table };
+        crate::naovivas::draw_pure(e, *p, &cx, out, gl);
+        if let Some(tex) = shadow_tex {
+            let (size, op) = crate::fx::shadow_of(e);
+            let strength = crate::fx::shadow_strength(*d2 as f64, op);
+            if size > 0.0 && strength > 0.0 {
+                crate::fx::shadow(out.entry(Tex::Custom(tex | crate::mobs::TRANSLUCENT)).or_default(), world, table, *pos, size, strength, time, *light);
+            }
+        }
+        if e.meta_byte(0) & 1 != 0 {
+            let (w, h) = e.size();
+            crate::fx::fire(out.entry(Tex::Blocks).or_default(), table, *p, w, h, view_yaw);
+        }
+    };
+    for item in list {
+        one(item, opaque, glow);
+    }
+}
+
 #[derive(Default)]
 pub struct Entities {
     /// Placar visto pelos nametags (o game atualiza quando o placar muda).
@@ -973,7 +999,10 @@ impl Entities {
             }
         }
         self.list.retain(|_, e| !(e.obj.pickup.is_some() && e.obj.expired));
-        for e in self.list.values_mut().filter(|e| e.obj.pickup.is_none()) {
+        let one = |e: &mut Entity| {
+            if e.obj.pickup.is_some() {
+                return;
+            }
             if matches!(e.kind, Kind::Mob(_)) {
                 let (width, height) = e.size();
                 let (hw, p) = (width as f64 / 2.0, e.pos);
@@ -981,7 +1010,17 @@ impl Entities {
                 e.in_water = crate::physics::box_in_water(w, &bb);
             }
             e.tick();
+        };
+        // Cada entidade só mexe em si e lê o mundo: com muitas (TNT em massa, animações de vitória) o tick é
+        // dividido entre os núcleos.
+        if self.list.len() >= PARALLEL_TICK {
+            use rayon::prelude::*;
+            self.list.par_iter_mut().for_each(|(_, e)| one(e));
+        } else {
+            self.list.values_mut().for_each(one);
         }
+        // EntityLightningBolt.setDead: o raio que acabou os clarões sai do mundo (antes ficava parado no céu).
+        self.list.retain(|_, e| !e.obj.expired);
     }
 
     fn spawn(&mut self, e: Entity) {
@@ -1005,6 +1044,8 @@ impl Entities {
             let kind = match id {
                 250 => Kind::Object { kind: ARMOR_STAND, data: 0 },
                 251 => Kind::Object { kind: 51, data: 0 },
+                // 249 = outro jogador ("Inimigo<n>", skin padrão).
+                249 => Kind::Player { uuid: Uuid(1000 + n as u128), name: format!("Inimigo{n}"), skin: None },
                 _ => Kind::Mob(id),
             };
             let mut e = Entity::new(-100 - n as i32, kind, fixed, 180.0, 0.0);
@@ -1082,8 +1123,16 @@ impl Entities {
 
     /// `onUpdate` das entidades não-vivas que olham o mundo (flecha cravada).
     pub fn tick_objects(&mut self, world: &World, table: &mc_world::blocks::BlockTable) {
-        for e in self.list.values_mut().filter(|e| e.obj.pickup.is_none()) {
-            crate::naovivas::tick_world(e, world, table);
+        let one = |e: &mut Entity| {
+            if e.obj.pickup.is_none() {
+                crate::naovivas::tick_world(e, world, table);
+            }
+        };
+        if self.list.len() >= PARALLEL_TICK {
+            use rayon::prelude::*;
+            self.list.par_iter_mut().for_each(|(_, e)| one(e));
+        } else {
+            self.list.values_mut().for_each(one);
         }
     }
 
@@ -1348,6 +1397,9 @@ impl Entities {
         let t = partial as f64;
         *rendered = 0;
         let planes = frustum_planes(cam, r.size());
+        // TNT e blocos caindo vão para `pure` e são desenhados no fim, sem passar pelo `draw_model` dos vivos.
+        let shadow_tex = if *entity_shadows { textures.jar(r, jar, "misc/shadow") } else { None };
+        let mut pure: Vec<(&Entity, Vec3, DVec3, f32, [u8; 4])> = Vec::new();
         for e in list.values() {
             if Some(e.id) == *hidden_view {
                 continue;
@@ -1381,6 +1433,12 @@ impl Entities {
             let burning = e.meta_byte(0) & 1 != 0;
             // RenderManager: entidade em chamas usa a luz máxima (15728880).
             let light = if burning { FULL_LIGHT } else { light_at(world, pos + DVec3::new(0.0, e.eye_height() as f64, 0.0)) };
+            if let Kind::Object { kind, .. } = e.kind {
+                if crate::naovivas::is_pure(kind) && !e.invisible() && holder.is_none() && e.label().is_none() && crate::fx::tint_code(e, partial).is_none() {
+                    pure.push((e, p, pos, d2, light));
+                    continue;
+                }
+            }
             let living = matches!(e.kind, Kind::Player { .. } | Kind::Mob(_)) || matches!(e.kind, Kind::Object { kind: ARMOR_STAND, .. });
             // A tinta só precisa saber o que este desenho acrescentou: o instantâneo só é tirado quando há tinta.
             let tint = crate::fx::tint_code(e, partial);
@@ -1480,6 +1538,7 @@ impl Entities {
                 }
             }
         }
+        draw_pure_batch(&pure, &mut opaque, &mut glow, partial, time, white, world, table, shadow_tex, cam.yaw);
         self.additive = glow.into_iter().map(|(tex, geo)| DrawItem { tex, geo, translucent: true }).collect();
         self.overlay.clear();
         let mut items: Vec<DrawItem> = opaque
@@ -2108,6 +2167,20 @@ mod tests {
         assert!((e.yaw - 90.0).abs() < 1e-4);
         assert_eq!(e.increments, 0);
         assert_eq!(e.prev.x, 3.0);
+    }
+
+    #[test]
+    fn raio_some_no_tick_do_jogo() {
+        // O jogo usa o `tick_in`: o raio que terminou os clarões (setDead) tem de sair da lista.
+        let mut ents = Entities::default();
+        let mut me = Player::default();
+        ents.handle(EntityPacket::SpawnGlobal { id: 42, kind: 1, x: 0, y: 64 * 32, z: 0 }, &mut me);
+        assert!(ents.list.contains_key(&42));
+        let world = World::default();
+        for _ in 0..60 {
+            ents.tick_in(&world);
+        }
+        assert!(!ents.list.contains_key(&42));
     }
 
     #[test]
