@@ -2722,11 +2722,17 @@ impl Game {
 
     /// Garante o ícone de (id, dano) no atlas da GUI.
     fn ensure_icon(&mut self, key: IconKey) {
+        let mut variant = key.2;
         if let Some(item) = crate::tile_entities::entity_from_variant(key.2) {
-            self.ensure_entity_icon(key, item);
-            return;
+            // Só é `builtin/entity` se o modelo do item (o do pacote de recursos, se houver) for: um pacote pode
+            // trocar as cabeças por um ícone plano (`builtin/generated`), e aí vale o modelo normal.
+            if self.icons.entity_display(key.0, key.1, &mut self.jar).is_some() {
+                self.ensure_entity_icon(key, item);
+                return;
+            }
+            variant &= mc_render::items::ENCHANTED;
         }
-        let (slot, img) = self.icons.get(key.0, key.1, key.2, &mut self.jar);
+        let (slot, img) = self.icons.get(key.0, key.1, variant, &mut self.jar);
         if let (Some(s), Some(img)) = (slot, img) {
             let (x, y) = icon_origin(s);
             if let Some(r) = &mut self.renderer {
@@ -2747,7 +2753,8 @@ impl Game {
         let lights = mc_render::items::gui_model_lights(gui).map(glam::Vec3::from);
         let mut geo = mc_world::mesh::Geometry::default();
         let mut sink = Sink { geo: &mut geo, tex: (64.0, 64.0), tint: [1.0; 3], alpha: 255, light: FULL_LIGHT, lights };
-        crate::tile_entities::emit_item(&item, &mut sink, &glam::Mat4::IDENTITY);
+        // RenderItem.renderItem (isBuiltInRenderer): o giro de 180° em Y antes do renderByItem, como na mão e no chão.
+        crate::tile_entities::emit_item(&item, &mut sink, &crate::first_person::builtin_matrix(glam::Mat4::IDENTITY));
         let img = mc_render::items::render_entity_icon(&geo, &tex, gui);
         if let Some(s) = self.icons.put(key.0, key.1, key.2) {
             let (x, y) = icon_origin(s);
