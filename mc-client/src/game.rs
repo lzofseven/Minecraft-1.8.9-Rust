@@ -1809,6 +1809,7 @@ impl Game {
         self.entities.gui_enabled = !self.hide_gui;
         self.entities.entity_shadows = self.menu.settings.entity_shadows;
         self.entities.viewer_spectator = self.player.spectator;
+        self.entities.front_view = self.camera.third_person == 2;
         let t = Instant::now();
         let mut front = 0..0;
         let mut models = match &mut self.renderer {

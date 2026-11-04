@@ -682,6 +682,8 @@ pub struct Entities {
     names: HashMap<String, NameQuads>,
     /// A `renderViewEntity` em primeira pessoa (S43): não é desenhada (`renderEntities`).
     pub hidden_view: Option<i32>,
+    /// Visão de frente (`thirdPersonView == 2`): os nomes giram 180° a mais.
+    pub front_view: bool,
 }
 
 /// Luz do mundo num ponto, no formato do vértice. Sem coluna: luz cheia; sem seção: céu aberto.
@@ -1386,7 +1388,7 @@ impl Entities {
         // O próprio jogador, que não está na lista: é o segurador com id `own_id`.
         own: Option<Anchor>,
     ) -> Vec<DrawItem> {
-        let Self { list, players, textures, cache, world_time, viewer_spectator, entity_shadows, rendered, gui_enabled, names, own_id, board, hidden_view, .. } = self;
+        let Self { list, players, textures, cache, world_time, viewer_spectator, entity_shadows, rendered, gui_enabled, names, own_id, board, hidden_view, front_view, .. } = self;
         let time = *world_time;
         let mut glow: HashMap<Tex, Geometry> = HashMap::new();
         textures.poll(r);
@@ -1561,13 +1563,15 @@ impl Entities {
             let (mut near, mut through) = (Geometry::default(), Geometry::default());
             for (_, text, at, sneak) in &labels {
                 let q = name_quads(names, ui, text.as_ref());
+                // RenderManager.cacheActiveRenderInfo: na visão de frente (F5 duas vezes) playerViewY += 180.
+                let vy = cam.yaw + if *front_view { 180.0 } else { 0.0 };
                 if *sneak {
-                    name_tag(&mut near, &q.bg, *at, cam, 1.0);
-                    name_tag(&mut near, &q.dim, *at, cam, 1.0);
+                    name_tag(&mut near, &q.bg, *at, vy, cam.pitch, 1.0);
+                    name_tag(&mut near, &q.dim, *at, vy, cam.pitch, 1.0);
                 } else {
-                    name_tag(&mut through, &q.bg, *at, cam, 1.0);
-                    name_tag(&mut through, &q.dim, *at, cam, 1.0);
-                    name_tag(&mut near, &q.bright, *at, cam, 1.0);
+                    name_tag(&mut through, &q.bg, *at, vy, cam.pitch, 1.0);
+                    name_tag(&mut through, &q.dim, *at, vy, cam.pitch, 1.0);
+                    name_tag(&mut near, &q.bright, *at, vy, cam.pitch, 1.0);
                 }
             }
             if !through.is_empty() {
@@ -2129,11 +2133,12 @@ fn name_layer(ui: &mut UiBatch, text: &str, layer: NameLayer) -> Vec<[UiVertex; 
 }
 
 /// Põe os quadros de um rótulo no `geo`, virados para a câmera (`renderLivingLabel`).
-pub fn name_tag(geo: &mut Geometry, quads: &[[UiVertex; 4]], at: Vec3, cam: &Camera, scale: f32) {
+/// `yaw`/`pitch`: `RenderManager.playerViewY` / `playerViewX` (na visão de frente o yaw ganha 180°).
+pub fn name_tag(geo: &mut Geometry, quads: &[[UiVertex; 4]], at: Vec3, yaw: f32, pitch: f32, scale: f32) {
     let s = 0.016666668 * 1.6 * scale;
     let m = Mat4::from_translation(at)
-        * Mat4::from_rotation_y((-cam.yaw).to_radians())
-        * Mat4::from_rotation_x(cam.pitch.to_radians())
+        * Mat4::from_rotation_y((-yaw).to_radians())
+        * Mat4::from_rotation_x(pitch.to_radians())
         * Mat4::from_scale(Vec3::new(-s, -s, s));
     for q in quads {
         let v = |i: usize| Vertex {
