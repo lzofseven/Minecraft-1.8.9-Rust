@@ -3990,11 +3990,17 @@ impl ApplicationHandler for Game {
                     }
                     return;
                 }
+                // Minecraft.runTick: sem tela, qualquer botão apertado chama o setIngameFocus, e o KeyBinding.onTick
+                // do mesmo clique já foi contado. O esquerdo não ataca (setIngameFocus põe o leftClickCounter em
+                // 10000); o direito coloca o bloco na hora. Antes só o esquerdo capturava e o direito se perdia
+                // (depois de fechar a loja, um baú ou o inventário).
                 if !self.grabbed {
-                    if pressed && button == MouseButton::Left && !self.hud.chat_open {
+                    if pressed && !self.hud.chat_open {
                         self.set_grab(true);
                     }
-                    return;
+                    if !self.grabbed || button == MouseButton::Left {
+                        return;
+                    }
                 }
                 // KeyBinding.setKeyBindState + onTick: o clique entra na fila (pressTime) e o runTick o processa.
                 match button {
