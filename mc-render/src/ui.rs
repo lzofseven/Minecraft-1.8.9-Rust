@@ -96,6 +96,14 @@ impl Font {
         (n < 32).then_some(n)
     }
 
+    /// Pede a página unicode só se ela ainda não está no atlas: pedir de novo uma carregada a gravaria numa vaga
+    /// nova, que a próxima página pedida também ocuparia (as duas se alternando no mesmo lugar).
+    pub fn want(&mut self, page: u8) {
+        if !self.pages.contains_key(&page) {
+            self.wanted.insert(page);
+        }
+    }
+
     pub fn page_loaded(&mut self, page: u8, slot: u32) {
         self.pages.insert(page, slot);
         self.wanted.remove(&page);
@@ -410,7 +418,7 @@ impl UiBatch {
         if code > 0xFFFF {
             return 0;
         }
-        self.font.wanted.insert((code >> 8) as u8);
+        self.font.want((code >> 8) as u8);
         match self.font.glyph_sizes.get(code as usize) {
             Some(&size) if size != 0 => {
                 let (j, k) = ((size >> 4) as i32, (size & 15) as i32 + 1);
@@ -591,4 +599,28 @@ pub fn strip_codes(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pagina_carregada_nao_e_pedida_de_novo() {
+        let mut font = Font::empty();
+        font.glyph_sizes = vec![0x0F; 65536];
+        let mut ui = UiBatch::new(font);
+        // ✔ (página 0x27) e ★ (0x26): o mesmo holograma com duas páginas.
+        ui.text_width("✔ ★");
+        assert_eq!(ui.font.wanted, HashSet::from([0x27, 0x26]));
+        let (a, b) = (ui.font.page_slot().unwrap(), 1);
+        ui.font.page_loaded(0x27, a);
+        ui.font.page_loaded(0x26, b);
+        // Medir o nome a cada quadro não pode pedir as páginas de novo (cada pedido regravava numa vaga nova).
+        ui.text_width("✔ ★");
+        ui.text(0.0, 0.0, "✔ ★", 0xFFFFFFFF, false);
+        assert!(ui.font.wanted.is_empty());
+        assert_eq!(ui.font.pages[&0x27], 0);
+        assert_eq!(ui.font.pages[&0x26], 1);
+    }
 }
