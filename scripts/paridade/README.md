@@ -5,7 +5,7 @@ no mesmo servidor local, e une os dois lado a lado. Serve para achar diferenças
 
 ## O que sobe
 
-- **Servidor:** `minecraft_server.1.8.9.jar` oficial em `~/Documentos/Projetos/mine-rs-servidor-teste`
+- **Servidor:** `minecraft_server.1.8.9.jar` oficial em `~/mine-rs-servidor-teste` (ou `PARIDADE_SERVIDOR`)
   (offline, 127.0.0.1:25577, `level-seed=1`, sem mobs naturais, `doDaylightCycle` desligado).
   O console recebe comandos por um FIFO (`server.stdin`).
 - **Cliente Java:** `minecraft-1.8.9-client.jar` vanilla do PrismLauncher, classe
@@ -37,7 +37,7 @@ Outros comandos: `servidor`, `preparar` (refaz o mundo de teste), `clientes`, `s
 Variáveis úteis: `PARIDADE_SERVIDOR`, `PARIDADE_RS_BIN`, `PARIDADE_SAIDA`, `PARIDADE_ESPERA`.
 
 Saídas:
-- `~/Documentos/Projetos/mine-rs-prints/paridade/NN_nome.png`: Java à esquerda, mine-rs à direita.
+- `~/mine-rs-prints/paridade/NN_nome.png` (ou `PARIDADE_SAIDA`): Java à esquerda, mine-rs à direita.
 - `/tmp/paridade-logs/brutas/`: os dois prints separados.
 - `/tmp/paridade-logs/`: logs do servidor e dos clientes.
 

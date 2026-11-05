@@ -16,7 +16,7 @@ DISPLAY_BENCH=${BENCH_DISPLAY:-:141}
 ESPERA=${BENCH_ESPERA:-40}   # s para carregar e montar os chunks de cada cena
 MEDE=${BENCH_MEDE:-30}       # s de medição por cena
 LOGS=/tmp/paridade-logs; mkdir -p "$LOGS"
-SERVIDOR=${PARIDADE_SERVIDOR:-$HOME/Documentos/Projetos/mine-rs-servidor-teste}
+SERVIDOR=${PARIDADE_SERVIDOR:-$HOME/mine-rs-servidor-teste}
 NOME=Bench
 # Cenas: x y z yaw pitch (mundo de semente 1). Horizonte aberto, olhando para baixo no terreno, e uma vista alta.
 CENAS=("horizonte 200 90 200 45 0" "terreno 200 80 200 135 30" "alto 0 140 0 -45 15")

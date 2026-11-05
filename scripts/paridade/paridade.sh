@@ -12,14 +12,14 @@ REPO="$(cd "$DIR/../.." && pwd)"
 # shellcheck source=cenas.sh
 . "$DIR/cenas.sh"
 
-SERVIDOR="${PARIDADE_SERVIDOR:-$HOME/Documentos/Projetos/mine-rs-servidor-teste}"
+SERVIDOR="${PARIDADE_SERVIDOR:-$HOME/mine-rs-servidor-teste}"
 JAVA_DISPLAY="${PARIDADE_JAVA_DISPLAY:-:124}"
 RS_DISPLAY="${PARIDADE_RS_DISPLAY:-:125}"
 JAVA_JOGO="${PARIDADE_JAVA_JOGO:-/tmp/paridade-java}"
 RS_CONFIG="${PARIDADE_RS_CONFIG:-/tmp/paridade-rs}"
 RS_BIN="${PARIDADE_RS_BIN:-$REPO/target/release/mc-client}"
 LOGS="${PARIDADE_LOGS:-/tmp/paridade-logs}"
-SAIDA="${PARIDADE_SAIDA:-$HOME/Documentos/Projetos/mine-rs-prints/paridade}"
+SAIDA="${PARIDADE_SAIDA:-$HOME/mine-rs-prints/paridade}"
 ESPERA="${PARIDADE_ESPERA:-10}"
 
 PORTA=25577

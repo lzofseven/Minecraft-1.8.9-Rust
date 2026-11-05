@@ -1,0 +1,28 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='760' height='320' viewBox='0 0 760 320' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>
+<rect width='760' height='320' rx='14' fill='#0d1117'/>
+<defs><marker id='s' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto'><path d='M0 0L10 5L0 10z' fill='#8b949e'/></marker></defs>
+<text x='24' y='36' font-size='20' font-weight='700' fill='#e6edf3'>Arquitetura</text>
+<text x='24' y='58' font-size='13' fill='#8b949e'>Cinco crates; cada seta aponta de quem usa para quem é usado.</text>
+<line x1='520' y1='168' x2='478' y2='130' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<line x1='520' y1='188' x2='478' y2='226' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<line x1='375' y1='160' x2='375' y2='196' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<line x1='272' y1='226' x2='230' y2='226' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<line x1='127' y1='160' x2='127' y2='196' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<path d='M623 148 C623 74 127 70 127 98' fill='none' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<path d='M623 208 C623 300 127 304 127 258' fill='none' stroke='#8b949e' stroke-width='1.5' marker-end='url(#s)'/>
+<rect x='24' y='196' width='206' height='60' rx='10' fill='#161b22' stroke='#30363d' stroke-width='1.5'/>
+<text x='38' y='221' font-size='15' font-weight='700' fill='#e6edf3'>mc-protocol</text>
+<text x='38' y='241' font-size='11.5' fill='#8b949e'>protocolo 47, NBT, slots</text>
+<rect x='24' y='100' width='206' height='60' rx='10' fill='#161b22' stroke='#30363d' stroke-width='1.5'/>
+<text x='38' y='125' font-size='15' font-weight='700' fill='#e6edf3'>mc-net</text>
+<text x='38' y='145' font-size='11.5' fill='#8b949e'>conexão e criptografia</text>
+<rect x='272' y='196' width='206' height='60' rx='10' fill='#161b22' stroke='#30363d' stroke-width='1.5'/>
+<text x='286' y='221' font-size='15' font-weight='700' fill='#e6edf3'>mc-world</text>
+<text x='286' y='241' font-size='11.5' fill='#8b949e'>chunks, blocos, luz, malhas</text>
+<rect x='272' y='100' width='206' height='60' rx='10' fill='#161b22' stroke='#30363d' stroke-width='1.5'/>
+<text x='286' y='125' font-size='15' font-weight='700' fill='#e6edf3'>mc-render</text>
+<text x='286' y='145' font-size='11.5' fill='#8b949e'>wgpu/Vulkan, atlas, UI</text>
+<rect x='520' y='148' width='206' height='60' rx='10' fill='#161b22' stroke='#f97316' stroke-width='1.5'/>
+<text x='534' y='173' font-size='15' font-weight='700' fill='#e6edf3'>mc-client</text>
+<text x='534' y='193' font-size='11.5' fill='#8b949e'>física, entidades, HUD</text>
+</svg>
