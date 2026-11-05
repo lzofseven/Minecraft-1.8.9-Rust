@@ -370,12 +370,13 @@ impl Inventory {
     /// (guiLeft, guiTop, xSize, ySize) da tela para uma janela de `w` x `h` pixels de GUI.
     pub fn frame(&self, w: f32, h: f32) -> (i32, i32, i32, i32) {
         let (xs, ys) = gui_size(self.kind(), self.container().len());
-        let left = if self.effect_screen() { crate::potion::gui_left(&self.effects, w as i32, xs) } else { ((w as i32) - xs) / 2 };
-        (left, ((h as i32) - ys) / 2, xs, ys)
+        // Sempre no centro, mesmo com efeitos (pedido do Lohan, como o `centralizar` do LzTweaks); o painel dos
+        // efeitos continua à esquerda da tela.
+        ((w as i32 - xs) / 2, ((h as i32) - ys) / 2, xs, ys)
     }
 
-    /// `GuiInventory` e `GuiContainerCreative` são `InventoryEffectRenderer`: com efeitos, a tela anda
-    /// para a direita e o painel aparece à esquerda.
+    /// `GuiInventory` e `GuiContainerCreative` são `InventoryEffectRenderer`: com efeitos o painel aparece à
+    /// esquerda (a tela fica no centro, sem o deslocamento do vanilla).
     pub fn effect_screen(&self) -> bool {
         self.own_screen && self.open.is_none() && self.special.is_none()
     }

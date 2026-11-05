@@ -184,9 +184,9 @@ pub fn tooltip_text(s: &Slot, lang: &Lang) -> Vec<String> {
 
 // ---------------------------------------------------------------- geometria
 
-/// guiLeft/guiTop; com efeitos de poção o `InventoryEffectRenderer` desloca a tela.
-fn frame(inv: &Inventory, w: f32, h: f32) -> (i32, i32) {
-    let left = crate::potion::gui_left(&inv.effects, w as i32, XS);
+/// guiLeft/guiTop: no centro mesmo com efeitos de poção (sem o deslocamento do `InventoryEffectRenderer`).
+fn frame(_inv: &Inventory, w: f32, h: f32) -> (i32, i32) {
+    let left = (w as i32 - XS) / 2;
     (left, ((h as i32) - YS) / 2)
 }
 

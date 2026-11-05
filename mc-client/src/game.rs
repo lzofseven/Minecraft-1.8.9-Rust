@@ -569,6 +569,13 @@ impl Game {
                 self.inv.open_window(1, "EntityHorse", "Cavalo".into(), 2, id);
             }
         }
+        // MINE_RS_TEST_EFEITOS=id:amplificador,...: efeitos de poção no jogador (o painel e a posição do inventário).
+        for e in env("EFEITOS").unwrap_or_default().split(',') {
+            let mut p = e.split(':').map(|v| v.trim().parse::<i32>().unwrap_or(0));
+            if let (Some(id), amp) = (p.next().filter(|&id| id > 0), p.next().unwrap_or(0)) {
+                self.hud.effects.add(crate::potion::Effect { id: id as u8, amplifier: amp as i8, duration: 1200, show_particles: true, duration_max: false });
+            }
+        }
         // MINE_RS_TEST_INV=aba: abre o inventário (criativo na aba dada, ex. 5 = busca, 11 = inventário).
         if let Some(tab) = env("INV") {
             crate::gui_creative::set_selected(tab.parse().unwrap_or(0));
@@ -4145,7 +4152,8 @@ impl ApplicationHandler for Game {
                             self.send(serverbound::digging(status, (0, 0, 0), 0));
                         } else if code == KeyCode::F1 && !event.repeat {
                             self.hide_gui = !self.hide_gui;
-                        } else if code == KeyCode::F5 && !event.repeat {
+                        } else if self.is_bind("key.togglePerspective", code) && !event.repeat {
+                            // gameSettings.keyBindTogglePerspective: a tecla dos Controles (F5 por padrão), não o F5 fixo.
                             self.camera.cycle();
                         } else if code == KeyCode::F3 && !event.repeat {
                             // Minecraft.runTick (k == 61); o gráfico do profiler (Shift) não foi portado.
