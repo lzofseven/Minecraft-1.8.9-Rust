@@ -38,7 +38,7 @@ fn path() -> PathBuf {
 }
 
 /// O Client ID do app Microsoft do usuário.
-/// App "Minecraft 1.8.9 Rust" no Azure (contas pessoais da Microsoft, fluxo de cliente público). Um Client ID
+/// App "Rust 1.8.9 Client" no Azure (contas pessoais da Microsoft, fluxo de cliente público). Um Client ID
 /// não é segredo: identifica o app na tela de login da Microsoft.
 pub const CLIENT_ID: &str = "09922b5b-7377-4cf2-9d16-aa12862adb07";
 
