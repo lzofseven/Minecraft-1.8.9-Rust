@@ -1,3 +1,6 @@
+// Windows: sem janela de console no executável final (veja `winapp`).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod achievement_toast;
 mod atmosphere;
 mod auth;
@@ -46,6 +49,7 @@ mod lang;
 mod msa;
 mod setup;
 mod visuals;
+mod winapp;
 mod maps;
 mod menu;
 // Modelos gerados de todos os mobs; parte ainda sem pose/desenho (HANDOFF-mobs.md).
@@ -177,6 +181,7 @@ fn join_headless(addr: &str, name: &str, session: Option<auth::Session>) -> Resu
 }
 
 fn main() {
+    winapp::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let positional: Vec<&str> = {
         let mut v = Vec::new();
@@ -199,6 +204,7 @@ fn main() {
         [] | ["play"] | ["play", _] | [_] if !matches!(positional.first(), Some(&"ping") | Some(&"join")) => who(&args).and_then(|w| {
             let jar = setup::jar(flag(&args, "--jar"))?;
             setup::assets()?;
+            winapp::progress_done();
             // Sem servidor: abre o menu principal (ou a tela de conta, sem conta).
             let server = positional.iter().copied().find(|a| *a != "play").map(str::to_string);
             let test_world = args.iter().any(|a| a == "--test-world");
@@ -212,6 +218,7 @@ fn main() {
     };
     if let Err(e) = res {
         eprintln!("erro: {e}");
+        winapp::fatal(&format!("Erro: {e}"));
         std::process::exit(1);
     }
 }

@@ -735,7 +735,8 @@ impl Renderer {
     pub async fn new(window: Arc<Window>, atlas: &AtlasImage, ui_rgba: &[u8]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            // DX12: Windows (fora dele a flag não acha adaptador). `WGPU_BACKEND=vulkan|dx12|gl` força um.
+            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::VULKAN | wgpu::Backends::GL | wgpu::Backends::DX12),
             ..Default::default()
         });
         let surface = instance.create_surface(window).map_err(|e| e.to_string())?;

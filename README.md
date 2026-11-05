@@ -21,6 +21,7 @@ Para jogar em servidores 1.8 com o jogo vanilla de sempre, mas usando uma fraç�
 
 - [O que é](#o-que-é)
 - [Desempenho](#desempenho)
+- [Windows](#windows)
 - [Instalação](#instalação)
 - [Primeiro uso](#primeiro-uso)
 - [Conta](#conta)
@@ -78,9 +79,26 @@ MINE_RS_STATS=1 target/release/mc-client --test-world --offline
 
 Os gráficos são gerados por [`scripts/gen_docs_graficos.py`](scripts/gen_docs_graficos.py); troque os números e rode de novo.
 
+## Windows
+
+1. Baixe o instalador: **[Minecraft-1.8.9-Rust-Instalador.exe](https://github.com/lzofseven/Minecraft-1.8.9-Rust/releases/latest/download/Minecraft-1.8.9-Rust-Instalador.exe)**.
+2. Dê dois cliques nele. Não precisa de administrador; o jogo vai para `%LOCALAPPDATA%\Minecraft 1.8.9 Rust`.
+3. Abra pelo atalho **Minecraft 1.8.9 Rust** na Área de Trabalho ou no Menu Iniciar.
+
+Na primeira vez, uma janela preta mostra o download dos arquivos do jogo direto da Mojang (alguns minutos, só uma vez) e some sozinha. Para remover, use **Configurações → Aplicativos** (ou "Adicionar ou remover programas").
+
+Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações → Executar assim mesmo**: o instalador não tem assinatura digital paga.
+
+| Pasta | Conteúdo |
+| --- | --- |
+| `%APPDATA%\mine-rs` | `options.txt`, `servers.dat`, conta |
+| `%LOCALAPPDATA%\mine-rs` | jar, sons, cache de skins e terreno guardado |
+
+Se você já tem o Minecraft 1.8.9 no launcher oficial (`%APPDATA%\.minecraft`) ou no Prism Launcher, o jogo usa esses arquivos e não baixa nada. Para gerar o instalador a partir do código (num Linux com `mingw-w64` e `nsis`): `scripts/build-windows.sh`.
+
 ## Instalação
 
-O cliente é testado no **Linux**. Windows e macOS ainda não foram testados.
+O cliente é testado no **Linux**; no Windows, use o [instalador](#windows). macOS ainda não foi testado.
 
 ### 1. Dependências
 
@@ -224,4 +242,4 @@ target/release/mc-client            # menu
 target/release/mc-client host:port  # join a server
 ```
 
-Tested on Linux with Vulkan. Licensed under [GPL-3.0](LICENSE). Not affiliated with Mojang or Microsoft.
+Tested on Linux with Vulkan. On Windows, download the [one-click installer](https://github.com/lzofseven/Minecraft-1.8.9-Rust/releases/latest/download/Minecraft-1.8.9-Rust-Instalador.exe). Licensed under [GPL-3.0](LICENSE). Not affiliated with Mojang or Microsoft.

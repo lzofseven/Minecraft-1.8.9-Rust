@@ -186,17 +186,36 @@ impl AssetIndex {
     }
 }
 
+fn env_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// Pasta do launcher oficial: `~/.minecraft` (no Windows, `%APPDATA%\.minecraft`).
+pub fn minecraft_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        env_dir("APPDATA").map(|d| d.join(".minecraft"))
+    } else {
+        env_dir("HOME").map(|h| h.join(".minecraft"))
+    }
+}
+
+/// Pasta do Prism Launcher: `~/.local/share/PrismLauncher` (no Windows, `%APPDATA%\PrismLauncher`).
+pub fn prism_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        env_dir("APPDATA").map(|d| d.join("PrismLauncher"))
+    } else {
+        env_dir("HOME").map(|h| h.join(".local/share/PrismLauncher"))
+    }
+}
+
 /// Pasta de assets do launcher: `MINE_RS_ASSETS`, Prism Launcher e `~/.minecraft/assets`.
 pub fn find_assets_dir() -> Option<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = std::env::var_os("MINE_RS_ASSETS") {
         dirs.push(PathBuf::from(d));
     }
-    if let Some(h) = std::env::var_os("HOME") {
-        let h = PathBuf::from(h);
-        dirs.push(h.join(".local/share/PrismLauncher/assets"));
-        dirs.push(h.join(".minecraft/assets"));
-    }
+    dirs.extend(prism_dir().map(|d| d.join("assets")));
+    dirs.extend(minecraft_dir().map(|d| d.join("assets")));
     dirs.into_iter().find(|d| d.join("indexes").join(format!("{ASSET_INDEX}.json")).is_file())
 }
 
@@ -511,8 +530,7 @@ pub fn resourcepacks_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("MINE_RS_RESOURCEPACKS") {
         return PathBuf::from(d);
     }
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    home.join(".minecraft/resourcepacks")
+    minecraft_dir().unwrap_or_else(|| PathBuf::from(".minecraft")).join("resourcepacks")
 }
 
 #[cfg(test)]

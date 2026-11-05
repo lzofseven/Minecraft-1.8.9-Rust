@@ -1828,7 +1828,13 @@ impl Menu {
 /// `GuiScreenResourcePacks` botão 2: abre a pasta de pacotes no gerenciador de arquivos.
 fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let opener = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let _ = std::process::Command::new(opener)
         .arg(dir)
         .stdin(std::process::Stdio::null())

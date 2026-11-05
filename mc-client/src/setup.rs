@@ -16,13 +16,28 @@ use crate::net::BoxErr;
 const MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const RESOURCES: &str = "https://resources.download.minecraft.net";
 
+fn env_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// `~/.local/share/mine-rs` (ou `$XDG_DATA_HOME/mine-rs`).
+/// `~/.local/share/mine-rs` (ou `$XDG_DATA_HOME/mine-rs`); no Windows, `%LOCALAPPDATA%\mine-rs`.
 pub fn data_dir() -> PathBuf {
+    if cfg!(windows) {
+        return env_dir("LOCALAPPDATA").or_else(|| env_dir("APPDATA")).unwrap_or_default().join("mine-rs");
+    }
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/share")).join("mine-rs")
+}
+
+/// Os jars da 1.8.9 dos launchers instalados (oficial e Prism), na ordem de preferência.
+pub fn launcher_jars() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    v.extend(mc_render::resources::minecraft_dir().map(|d| d.join("versions/1.8.9/1.8.9.jar")));
+    v.extend(mc_render::resources::prism_dir().map(|d| d.join("libraries/com/mojang/minecraft/1.8.9/minecraft-1.8.9-client.jar")));
+    v
 }
 
 fn agent() -> ureq::Agent {
@@ -66,17 +81,13 @@ pub fn jar(explicit: Option<&str>) -> Result<PathBuf, BoxErr> {
     if let Some(p) = explicit.map(PathBuf::from).or_else(|| std::env::var_os("MINE_RS_JAR").map(PathBuf::from)) {
         return Ok(p);
     }
-    let h = home();
     let mine = data_dir().join("minecraft-1.8.9.jar");
-    for p in [
-        h.join(".minecraft/versions/1.8.9/1.8.9.jar"),
-        h.join(".local/share/PrismLauncher/libraries/com/mojang/minecraft/1.8.9/minecraft-1.8.9-client.jar"),
-        mine.clone(),
-    ] {
+    for p in launcher_jars().into_iter().chain([mine.clone()]) {
         if p.is_file() {
             return Ok(p);
         }
     }
+    crate::winapp::progress_console();
     println!("Baixando o Minecraft 1.8.9 da Mojang (uma vez)...");
     let v = version_json()?;
     let c = &v["downloads"]["client"];
@@ -93,6 +104,7 @@ pub fn assets() -> Result<(), BoxErr> {
     let dir = data_dir().join("assets");
     let index_path = dir.join("indexes/1.8.json");
     if !index_path.is_file() {
+        crate::winapp::progress_console();
         println!("Baixando o índice de sons e idiomas da Mojang (uma vez)...");
         let v = version_json()?;
         let ai = &v["assetIndex"];
@@ -106,7 +118,9 @@ pub fn assets() -> Result<(), BoxErr> {
     let missing: Vec<(String, u64)> = objects.into_iter().filter(|(h, _)| !dir.join("objects").join(&h[..2]).join(h).is_file()).collect();
     if !missing.is_empty() {
         let total: u64 = missing.iter().map(|m| m.1).sum();
+        crate::winapp::progress_console();
         println!("Baixando {} sons e idiomas ({} MB, uma vez)...", missing.len(), total >> 20);
+        let count = missing.len();
         let queue = Arc::new(Mutex::new(missing));
         let done = Arc::new(AtomicUsize::new(0));
         let errors = Arc::new(Mutex::new(Vec::new()));
@@ -125,6 +139,14 @@ pub fn assets() -> Result<(), BoxErr> {
                 })
             })
             .collect();
+        // Progresso numa linha só, para quem abriu pelo atalho não achar que travou.
+        while workers.iter().any(|w| !w.is_finished()) {
+            let d = done.load(Ordering::Relaxed);
+            print!("\r  {d} de {count} ({}%)   ", d * 100 / count.max(1));
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        println!("\r  {count} de {count} (100%)   ");
         for w in workers {
             let _ = w.join();
         }

@@ -1038,6 +1038,9 @@ pub fn config_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("MINE_RS_CONFIG") {
         return PathBuf::from(d);
     }
+    if cfg!(windows) {
+        return PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("mine-rs");
+    }
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/mine-rs")
 }
 

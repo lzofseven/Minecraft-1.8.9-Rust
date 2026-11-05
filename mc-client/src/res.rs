@@ -17,12 +17,8 @@ pub fn install(jar: Jar) {
 pub fn jar() -> Option<Jar> {
     let mut g = JAR.lock().ok()?;
     if g.is_none() {
-        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
-        let paths = [
-            home.join(".minecraft/versions/1.8.9/1.8.9.jar"),
-            home.join(".local/share/PrismLauncher/libraries/com/mojang/minecraft/1.8.9/minecraft-1.8.9-client.jar"),
-            crate::setup::data_dir().join("minecraft-1.8.9.jar"),
-        ];
+        let mut paths = crate::setup::launcher_jars();
+        paths.push(crate::setup::data_dir().join("minecraft-1.8.9.jar"));
         *g = paths.iter().find_map(|p| Jar::open(p).ok());
     }
     g.clone()

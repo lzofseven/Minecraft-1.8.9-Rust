@@ -145,8 +145,11 @@ pub fn fix_skin(src: &RgbaImage) -> Option<RgbaImage> {
     Some(img)
 }
 
-/// Pasta do cache de skins (`~/.cache/mine-rs/skins`), como o `assets/skins` do `SkinManager`.
+/// Pasta do cache de skins (`~/.cache/mine-rs/skins`; no Windows, `%LOCALAPPDATA%\mine-rs\cache\skins`), como o `assets/skins` do `SkinManager`.
 pub fn cache_dir() -> std::path::PathBuf {
+    if cfg!(windows) {
+        return crate::setup::data_dir().join("cache").join("skins");
+    }
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache"));
