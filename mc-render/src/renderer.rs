@@ -160,6 +160,15 @@ fn fs_far(i: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(shade(i).rgb, 1.0);
 }
 
+// Água de longe: como a de perto (`fs_translucent`), com o mesmo recorte.
+@fragment
+fn fs_far_water(i: VsOut) -> @location(0) vec4<f32> {
+    if (near_drawn(i.wpos)) {
+        discard;
+    }
+    return shade(i);
+}
+
 // Partículas: mistura com recorte em 1/255 (`alphaFunc(GREATER, 0.003921569)`).
 @fragment
 fn fs_particle(i: VsOut) -> @location(0) vec4<f32> {
@@ -402,7 +411,8 @@ impl FarFrame {
 
 /// Bloco do terreno de longe na GPU.
 struct FarTile {
-    part: Part,
+    /// Parte opaca e água (translúcida).
+    parts: [Option<Part>; 2],
     min: Vec3,
     max: Vec3,
 }
@@ -647,6 +657,7 @@ pub struct Renderer {
     sections: HashMap<(i32, i32, i32), SectionGpu>,
     far_tiles: HashMap<(i32, i32), FarTile>,
     far_blocks: wgpu::RenderPipeline,
+    far_water_blocks: wgpu::RenderPipeline,
     /// Vértices e índices de todas as seções, e os argumentos dos desenhos indiretos do quadro.
     sec_vb: crate::arena::Pool,
     sec_ib: crate::arena::Pool,
@@ -927,6 +938,7 @@ impl Renderer {
         let cutout = pipeline("vs_main", "fs_cutout", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let solid_blocks = terrain("fs_solid_block", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let far_blocks = terrain("fs_far", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
+        let far_water_blocks = terrain("fs_far_water", &[vertex_layout.clone()], Some(wgpu::BlendState::ALPHA_BLENDING), depth_state(false, wgpu::CompareFunction::LessEqual));
         let cutout_blocks = terrain("fs_cutout_block", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let cutout_nomip_blocks = terrain("fs_cutout_block_nomip", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let translucent_blocks = terrain("fs_translucent", &[vertex_layout.clone()], Some(wgpu::BlendState::ALPHA_BLENDING), depth_state(false, wgpu::CompareFunction::LessEqual));
@@ -1101,6 +1113,7 @@ impl Renderer {
             sections: HashMap::new(),
             far_tiles: HashMap::new(),
             far_blocks,
+            far_water_blocks,
             sec_vb,
             sec_ib,
             indirect,
@@ -1388,26 +1401,30 @@ impl Renderer {
     }
 
     /// Terreno de longe do bloco `key` (substitui o anterior; geometria vazia só remove).
-    pub fn upload_far(&mut self, key: (i32, i32), g: &Geometry) {
+    /// Terreno de longe do bloco `key`: parte opaca e água (substitui o anterior; tudo vazio só remove).
+    pub fn upload_far(&mut self, key: (i32, i32), opaque: &Geometry, water: &Geometry) {
         self.remove_far(key);
-        if g.is_empty() {
+        if opaque.is_empty() && water.is_empty() {
             return;
         }
         let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        for v in &g.vertices {
+        for v in opaque.vertices.iter().chain(&water.vertices) {
             let p = Vec3::from(v.pos);
             min = min.min(p);
             max = max.max(p);
         }
-        if let Some(part) = self.put_part(g) {
-            self.far_tiles.insert(key, FarTile { part, min, max });
+        let parts = [opaque, water].map(|g| if g.is_empty() { None } else { self.put_part(g) });
+        if parts.iter().any(Option::is_some) {
+            self.far_tiles.insert(key, FarTile { parts, min, max });
         }
     }
 
     pub fn remove_far(&mut self, key: (i32, i32)) {
         if let Some(t) = self.far_tiles.remove(&key) {
-            self.sec_vb.release(t.part.v);
-            self.sec_ib.release(t.part.i);
+            for p in t.parts.into_iter().flatten() {
+                self.sec_vb.release(p.v);
+                self.sec_ib.release(p.i);
+            }
         }
     }
 
@@ -1420,6 +1437,11 @@ impl Renderer {
 
     pub fn far_count(&self) -> usize {
         self.far_tiles.len()
+    }
+
+    /// Quadriláteros do terreno de longe na GPU (opaco + água), para o `[stats]`.
+    pub fn far_quads(&self) -> usize {
+        self.far_tiles.values().flat_map(|t| t.parts.iter().flatten()).map(|p| p.i.len as usize / 6).sum()
     }
 
     fn gui_bind_group(&self, t: Tex) -> Option<&wgpu::BindGroup> {
@@ -1679,9 +1701,10 @@ impl Renderer {
             }
             *layer = (first, args.len() as u32 - first);
         }
-        // Terreno de longe: depois das camadas de perto, de frente para trás.
-        let far_layer = {
-            let first = args.len() as u32;
+        // Terreno de longe: o opaco depois das camadas de perto, de frente para trás; a água antes da de perto, de
+        // trás para a frente.
+        let (mut far_layer, mut far_water) = ((0u32, 0u32), (0u32, 0u32));
+        {
             if let Some(ff) = f.far {
                 let reach = (ff.distance + 96.0).powi(2);
                 let eye = cam.eye;
@@ -1695,10 +1718,14 @@ impl Renderer {
                     })
                     .collect();
                 tiles.sort_by(|a, b| a.0.total_cmp(&b.0));
-                args.extend(tiles.iter().map(|(_, t)| draw_args(&t.part)));
+                let first = args.len() as u32;
+                args.extend(tiles.iter().filter_map(|(_, t)| t.parts[0].as_ref()).map(draw_args));
+                far_layer = (first, args.len() as u32 - first);
+                let first = args.len() as u32;
+                args.extend(tiles.iter().rev().filter_map(|(_, t)| t.parts[1].as_ref()).map(draw_args));
+                far_water = (first, args.len() as u32 - first);
             }
-            (first, args.len() as u32 - first)
-        };
+        }
         self.indirect.upload(&self.device, &self.queue, bytemuck::cast_slice(&args));
 
         // Geometria do quadro (entidades, textos, mão e GUI) num lote só: um upload por buffer, antes do desenho.
@@ -1737,7 +1764,11 @@ impl Renderer {
             });
             // Uma camada do terreno inteira: os buffers grandes e um desenho indireto (ou um draw_indexed por seção).
             let terrain = |pass: &mut wgpu::RenderPass, layer: usize| {
-                let (first, count) = if layer < 4 { layers[layer] } else { far_layer };
+                let (first, count) = match layer {
+                    0..=3 => layers[layer],
+                    4 => far_layer,
+                    _ => far_water,
+                };
                 if count == 0 {
                     return;
                 }
@@ -1798,7 +1829,12 @@ impl Renderer {
 
             sky_pass(&mut pass, 1);
 
-            // Translúcidos de trás para a frente.
+            // Translúcidos de trás para a frente: a água de longe primeiro.
+            if far_water.1 > 0 {
+                pass.set_pipeline(&self.far_water_blocks);
+                pass.set_bind_group(0, &self.blocks_bg, &[]);
+                terrain(&mut pass, 5);
+            }
             pass.set_pipeline(&self.translucent_blocks);
             pass.set_bind_group(0, &self.blocks_bg, &[]);
             terrain(&mut pass, 3);

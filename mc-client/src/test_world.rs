@@ -136,6 +136,52 @@ fn hills(cx: i32, cz: i32, biome: Option<u8>) -> ChunkData {
             }
         }
     }
+    // Na frente do spawn (olhando para +z), como a arena do Mush: duas árvores gigantes (tronco 2x2, copa
+    // redonda), uma torre de lã magenta e uma ilha flutuante.
+    let mut put_world = |wx: i32, y: i32, wz: i32, st: u16| {
+        let (lx, lz) = (wx - cx * 16, wz - cz * 16);
+        if (0..16).contains(&lx) && (0..16).contains(&lz) {
+            put(lx, y, lz, st);
+        }
+    };
+    for (tx, tz, h) in [(6, 50, 22), (-16, 62, 26)] {
+        let g = hill_height(tx, tz);
+        for y in g..g + h {
+            for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                put_world(tx + dx, y, tz + dz, 17 << 4);
+            }
+        }
+        let (top, r) = (g + h, 6);
+        for dy in -r..=r / 2 {
+            for dz in -r..=r {
+                for dx in -r..=r {
+                    if dx * dx + dy * dy * 2 + dz * dz <= r * r {
+                        put_world(tx + dx, top + dy, tz + dz, 18 << 4);
+                    }
+                }
+            }
+        }
+    }
+    let g = hill_height(18, 44);
+    for y in g..g + 30 {
+        for dz in 0..3 {
+            for dx in 0..3 {
+                put_world(18 + dx, y, 44 + dz, 35 << 4 | 2);
+            }
+        }
+    }
+    for dz in -8..=8 {
+        for dx in -8..=8 {
+            let d2 = dx * dx + dz * dz;
+            if d2 > 64 {
+                continue;
+            }
+            let depth = 1 + (64 - d2) / 12;
+            for y in 96 - depth..=96 {
+                put_world(-6 + dx, y, 78 + dz, if y == 96 { 2 << 4 } else { 3 << 4 });
+            }
+        }
+    }
     let mut mask = 0u16;
     let mut sections = Vec::new();
     for (i, s) in secs.into_iter().enumerate() {

@@ -4,16 +4,13 @@
 //! pelo menos metade dos blocos dela é sólida e vira um cubo grande com a textura do bloco mais alto dela;
 //! plantas, tochas e afins somem, a água fica só com a superfície. Luz plana do bloco à frente de cada face.
 //!
-//! `FarColumn` e `mesh_far_tile`: resumo de uma coluna (altura, bloco do topo e bioma de cada x, z) e o terreno
-//! de longe feito desses resumos, um mapa de alturas em células de `step` blocos com paredes entre as alturas.
+//! `FarColumn` e `mesh_far_tile`: resumo de uma coluna (para cada x, z os trechos sólidos, a água e a copa) e o
+//! terreno de longe feito desses resumos, em células de `step` blocos.
 
 use crate::biome;
 use crate::blocks::{BlockTable, Model};
 use crate::chunk::{Column, Section};
 use crate::mesh::{atlas_uv, flat, section_visibility, tint_for, Ctx, Geometry, MeshData, Padded, Vertex, BORDER, DIRS, SHADE};
-
-/// Escurecimento extra das laterais de superfície (que usam a textura do topo).
-const SURFACE_SIDE: f32 = 0.72;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -196,14 +193,9 @@ pub fn mesh_section_lod(p: &Padded, origin: [i32; 3], t: &BlockTable, level: u8)
                         let geo = if lava { &mut m.opaque } else { &mut m.translucent };
                         big_face(geo, f, wlo, whi, tex, crate::mesh::tint_rgba(rgb, SHADE[f]), light);
                     } else {
-                        // Lateral de célula de superfície: de longe, um morro de degraus de 1 bloco mostra quase só o
-                        // topo dos blocos; a lateral esticada (grama em cima, terra embaixo) deixaria o morro marrom.
-                        let surface = f >= 2 && at([cx, cy + 1, cz]) != Kind::Solid;
-                        let (tex, tinted) = face_look(t, st, if surface { 1 } else { f });
+                        let (tex, tinted) = face_look(t, st, f);
                         let rgb = if tinted { ctx.tint_at(st, [lo[0] + half, lo[1] + step - 1, lo[2] + half], wpos) } else { 0xFFFFFF };
-                        // A lateral de verdade tem terra e sombra da oclusão: o topo usado nela vem mais escuro.
-                        let k = if surface { SHADE[f] * SURFACE_SIDE } else { SHADE[f] };
-                        big_face(&mut m.opaque, f, wlo, whi, tex, crate::mesh::tint_rgba(rgb, k), light);
+                        big_face(&mut m.opaque, f, wlo, whi, tex, crate::mesh::tint_rgba(rgb, SHADE[f]), light);
                     }
                 }
             }
@@ -213,45 +205,148 @@ pub fn mesh_section_lod(p: &Padded, origin: [i32; 3], t: &BlockTable, level: u8)
     m
 }
 
-/// Resumo de uma coluna para o terreno de longe: para cada x, z (índice z * 16 + x) a altura do topo
-/// (y + 1 do bloco mais alto que não é ar nem planta; 0 = vazio), o bloco do topo e o bioma.
+/// Bloco visto pelo terreno de longe: chão (vira trecho sólido), água, folhas (camada da copa) ou nada.
+/// Troncos, cercas, portas, tochas, plantas, trilhos e afins não contam: não viram pilar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FarKind {
+    Air,
+    Ground,
+    Water,
+    Leaves,
+}
+
+fn far_kind(t: &BlockTable, st: u16) -> FarKind {
+    match st >> 4 {
+        0 => return FarKind::Air,
+        8 | 9 => return FarKind::Water,
+        18 | 161 => return FarKind::Leaves,
+        17 | 162 | 26 | 27 | 28 | 30 | 39 | 40 | 50 | 51 | 55 | 63 | 64 | 65 | 66 | 68 | 69 | 70 | 71 | 72 | 75 | 76 | 77 | 78 | 90 | 93 | 94
+        | 96 | 106 | 111 | 119 | 131 | 132 | 143 | 144 | 147 | 148 | 149 | 150 | 157 | 167 | 171 | 176 | 177 | 193..=197 => {
+            return FarKind::Air
+        }
+        _ => {}
+    }
+    if t.models.is_some() && !t.valid(st) {
+        return FarKind::Air;
+    }
+    match t.get(st).model {
+        Model::Air | Model::Invisible | Model::Unsupported | Model::Cross | Model::DoublePlant | Model::Connected(_) | Model::Door { .. } => FarKind::Air,
+        _ => FarKind::Ground,
+    }
+}
+
+/// Trecho sólido de uma coluna: do bloco `bottom` até `top - 1`; `top_state` é o bloco de cima e `fill_state`
+/// o de 3 blocos abaixo dele (a lateral: grama em cima, terra ou pedra embaixo).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Span {
+    pub bottom: u8,
+    pub top: u8,
+    pub top_state: u16,
+    pub fill_state: u16,
+}
+
+/// Trechos guardados por coluna, de cima para baixo; o resto vai junto no último (cavernas fundas somem).
+pub const FAR_SPANS: usize = 3;
+
+/// Uma coluna x, z do resumo: os trechos sólidos (sem fundo falso: ilhas no vazio continuam flutuando), a
+/// superfície da água acima do chão (`water` = y + 1, 0 = sem), a copa das árvores acima do chão (`canopy` = y + 1
+/// do topo das folhas, com `canopy_depth` de espessura) e o bioma.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct FarCell {
+    pub n: u8,
+    pub spans: [Span; FAR_SPANS],
+    pub water: u8,
+    pub canopy: u8,
+    pub canopy_depth: u8,
+    pub canopy_state: u16,
+    pub biome: u8,
+}
+
+impl FarCell {
+    fn spans(&self) -> &[Span] {
+        &self.spans[..self.n as usize]
+    }
+
+    fn top(&self) -> i32 {
+        self.spans().first().map_or(0, |s| s.top as i32)
+    }
+
+    fn push(&mut self, s: Span) {
+        if (self.n as usize) < FAR_SPANS {
+            self.spans[self.n as usize] = s;
+            self.n += 1;
+        } else {
+            self.spans[FAR_SPANS - 1].bottom = s.bottom;
+        }
+    }
+}
+
+const CELL_BYTES: usize = 1 + FAR_SPANS * 6 + 6;
+/// Bytes por coluna em `FarColumn::to_bytes`.
+pub const FAR_COLUMN_BYTES: usize = 256 * CELL_BYTES;
+
+/// Resumo de uma coluna de chunk para o terreno de longe (índice z * 16 + x).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FarColumn {
-    pub height: [u8; 256],
-    pub state: [u16; 256],
-    pub biome: [u8; 256],
+    pub cells: Box<[FarCell; 256]>,
 }
 
 impl Default for FarColumn {
     fn default() -> Self {
-        Self { height: [0; 256], state: [0; 256], biome: [1; 256] }
+        Self { cells: Box::new([FarCell { biome: 1, ..Default::default() }; 256]) }
     }
 }
-
-/// Bytes por coluna em `FarColumn::to_bytes`.
-pub const FAR_COLUMN_BYTES: usize = 256 * 4;
 
 impl FarColumn {
     pub fn summarize(col: &Column, t: &BlockTable) -> Self {
         let mut out = Self::default();
-        let top = col.sections.iter().rposition(|s| s.is_some());
+        let Some(top_sec) = col.sections.iter().rposition(|s| s.is_some()) else { return out };
         for z in 0..16 {
             for x in 0..16 {
                 let i = (z * 16 + x) as usize;
+                let c = &mut out.cells[i];
                 if let Some(b) = &col.biomes {
-                    out.biome[i] = if b[i] == 255 { 1 } else { b[i] };
+                    c.biome = if b[i] == 255 { 1 } else { b[i] };
                 }
-                let Some(top) = top else { continue };
-                'col: for sy in (0..=top).rev() {
-                    let Some(s) = &col.sections[sy] else { continue };
-                    for y in (0..16).rev() {
-                        let st = s.blocks[Section::index(x, y, z)];
-                        if kind(t, st) != Kind::Air {
-                            out.height[i] = (sy as i32 * 16 + y + 1).min(255) as u8;
-                            out.state[i] = st;
-                            break 'col;
+                let mut run: Option<Span> = None;
+                let mut ground = false;
+                let mut prev_leaf = false;
+                for y in (0..(top_sec as i32 + 1) * 16).rev() {
+                    let st = col.sections[(y >> 4) as usize].as_ref().map_or(0, |s| s.blocks[Section::index(x, y & 15, z)]);
+                    let k = far_kind(t, st);
+                    if k == FarKind::Ground {
+                        ground = true;
+                        prev_leaf = false;
+                        match &mut run {
+                            None => run = Some(Span { bottom: y as u8, top: (y + 1).min(255) as u8, top_state: st, fill_state: st }),
+                            Some(s) => {
+                                s.bottom = y as u8;
+                                if s.top as i32 - y <= 4 {
+                                    s.fill_state = st;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some(s) = run.take() {
+                        c.push(s);
+                    }
+                    if !ground {
+                        match k {
+                            FarKind::Water if c.water == 0 => c.water = (y + 1).min(255) as u8,
+                            FarKind::Leaves if c.canopy == 0 => {
+                                c.canopy = (y + 1).min(255) as u8;
+                                c.canopy_state = st;
+                                c.canopy_depth = 1;
+                            }
+                            FarKind::Leaves if prev_leaf && c.canopy_depth < 8 => c.canopy_depth += 1,
+                            _ => {}
                         }
                     }
+                    prev_leaf = k == FarKind::Leaves;
+                }
+                if let Some(s) = run {
+                    c.push(s);
                 }
             }
         }
@@ -259,32 +354,44 @@ impl FarColumn {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.height.iter().all(|&h| h == 0)
+        self.cells.iter().all(|c| c.n == 0 && c.water == 0 && c.canopy == 0)
     }
 
     pub fn to_bytes(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.height);
-        for s in &self.state {
-            out.extend_from_slice(&s.to_le_bytes());
+        for c in self.cells.iter() {
+            out.push(c.n);
+            for s in &c.spans {
+                out.extend_from_slice(&[s.bottom, s.top]);
+                out.extend_from_slice(&s.top_state.to_le_bytes());
+                out.extend_from_slice(&s.fill_state.to_le_bytes());
+            }
+            out.extend_from_slice(&[c.water, c.canopy, c.canopy_depth]);
+            out.extend_from_slice(&c.canopy_state.to_le_bytes());
+            out.push(c.biome);
         }
-        out.extend_from_slice(&self.biome);
     }
 
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
         if b.len() < FAR_COLUMN_BYTES {
             return None;
         }
-        let mut c = Self::default();
-        c.height.copy_from_slice(&b[..256]);
-        for i in 0..256 {
-            c.state[i] = u16::from_le_bytes([b[256 + i * 2], b[257 + i * 2]]);
+        let mut col = Self::default();
+        let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        for (k, c) in col.cells.iter_mut().enumerate() {
+            let o = k * CELL_BYTES;
+            c.n = b[o].min(FAR_SPANS as u8);
+            for (j, s) in c.spans.iter_mut().enumerate() {
+                let p = o + 1 + j * 6;
+                *s = Span { bottom: b[p], top: b[p + 1], top_state: u16_at(p + 2), fill_state: u16_at(p + 4) };
+            }
+            let p = o + 1 + FAR_SPANS * 6;
+            (c.water, c.canopy, c.canopy_depth, c.canopy_state, c.biome) = (b[p], b[p + 1], b[p + 2], u16_at(p + 3), b[p + 5]);
         }
-        c.biome.copy_from_slice(&b[768..1024]);
-        Some(c)
+        Some(col)
     }
 }
 
-/// Cor do bioma para o topo de longe (o `colorMultiplier` sem a média 3x3).
+/// Cor do bioma para o terreno de longe (o `colorMultiplier` sem a média 3x3).
 fn far_tint(t: &BlockTable, st: u16, biome_id: u8, wpos: [i32; 3]) -> u32 {
     let b = biome::biome(biome_id);
     let Some(maps) = &t.colormaps else { return t.tint_color(st) };
@@ -304,117 +411,171 @@ fn far_tint(t: &BlockTable, st: u16, biome_id: u8, wpos: [i32; 3]) -> u32 {
 /// Lado do bloco de terreno de longe, em chunks.
 pub const FAR_TILE: i32 = 4;
 
+/// Terreno de longe de um bloco: a parte opaca e a água (translúcida, como a de perto).
+#[derive(Default)]
+pub struct FarMesh {
+    pub opaque: Geometry,
+    pub translucent: Geometry,
+}
+
+/// `[lo, hi)` menos os trechos `cover`.
+fn uncovered(lo: f32, hi: f32, cover: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut out = vec![(lo, hi)];
+    for &(a, b) in cover {
+        out = out
+            .into_iter()
+            .flat_map(|(l, h)| {
+                let mut v = Vec::new();
+                if a > l {
+                    v.push((l, a.min(h)));
+                }
+                if b < h {
+                    v.push((b.max(l), h));
+                }
+                v
+            })
+            .filter(|(l, h)| h - l > 0.001)
+            .collect();
+    }
+    out
+}
+
 /// Terreno de longe do bloco de `FAR_TILE` x `FAR_TILE` chunks que começa no chunk `(cx0, cz0)`, em células de
-/// `step` blocos (divisor de 16). `get` devolve o resumo de uma coluna (também as vizinhas, para as paredes).
-/// Tudo opaco, com luz do céu cheia.
-pub fn mesh_far_tile<'c>(cx0: i32, cz0: i32, step: i32, t: &BlockTable, get: &dyn Fn(i32, i32) -> Option<&'c FarColumn>) -> Geometry {
-    let mut geo = Geometry::default();
+/// `step` blocos (divisor de 16). Cada célula usa a coluna mais alta dela; paredes só onde o lado fica exposto
+/// (até o trecho da vizinha, ou o fundo do trecho: nada de pilar até y = 0), com a lateral do bloco de cima no
+/// primeiro bloco e a do bloco de dentro no resto. Copa como placa, água translúcida. Luz do céu cheia.
+pub fn mesh_far_tile<'c>(cx0: i32, cz0: i32, step: i32, t: &BlockTable, get: &dyn Fn(i32, i32) -> Option<&'c FarColumn>) -> FarMesh {
+    let mut m = FarMesh::default();
     let step = step.clamp(1, 16);
     let per = 16 / step;
-    // Altura e bloco de uma célula: o ponto mais alto dela (mantém morros e árvores); e o mais baixo, até onde
-    // descem as paredes das vizinhas (na borda com o terreno de perto, a encosta de verdade fica coberta).
-    let cell = |gx: i32, gz: i32| -> Option<(i32, u16, u8, i32)> {
-        let (cx, cz) = (gx.div_euclid(per), gz.div_euclid(per));
-        let c = get(cx, cz)?;
+    // Célula: a coluna de chão mais alta (ou, com `low`, a mais baixa: a parede da borda com o terreno de perto
+    // desce até o chão de verdade da coluna vizinha), com a água e a copa mais altas da célula.
+    let cell = |gx: i32, gz: i32, low: bool| -> Option<FarCell> {
+        let col = get(gx.div_euclid(per), gz.div_euclid(per))?;
         let (lx, lz) = (gx.rem_euclid(per) * step, gz.rem_euclid(per) * step);
-        let mut best: Option<(i32, u16, u8)> = None;
-        let mut low = i32::MAX;
+        let mut best: Option<FarCell> = None;
+        let (mut water, mut canopy) = (0u8, None::<FarCell>);
         for z in lz..lz + step {
             for x in lx..lx + step {
-                let i = (z * 16 + x) as usize;
-                let h = c.height[i] as i32;
-                if h > 0 && best.map_or(true, |b| h > b.0) {
-                    best = Some((h, c.state[i], c.biome[i]));
+                let c = col.cells[(z * 16 + x) as usize];
+                let better = match best {
+                    None => true,
+                    Some(b) if low => c.top() < b.top(),
+                    Some(b) => c.top() > b.top(),
+                };
+                if better {
+                    best = Some(c);
                 }
-                if h > 0 {
-                    low = low.min(h);
+                water = water.max(c.water);
+                if c.canopy > canopy.map_or(0, |k| k.canopy) {
+                    canopy = Some(c);
                 }
             }
         }
-        let (h, st, b) = best.unwrap_or((0, 0, 1));
-        Some((h, st, b, if low == i32::MAX { 0 } else { low }))
+        let mut c = best?;
+        c.water = water;
+        if let Some(k) = canopy {
+            (c.canopy, c.canopy_depth, c.canopy_state) = (k.canopy, k.canopy_depth, k.canopy_state);
+        }
+        Some(c)
     };
     let light = flat(0xF0);
     let s = step as f32;
+    let look = |st: u16, f: usize, b: u8, wpos: [i32; 3]| -> (u16, u32) {
+        if matches!(st >> 4, 10 | 11) {
+            return (t.fluid_tex[1][0], 0xFFFFFF);
+        }
+        let (tex, tinted) = face_look(t, st, f);
+        (tex, if tinted { far_tint(t, st, b, wpos) } else { 0xFFFFFF })
+    };
     for gz in cz0 * per..(cz0 + FAR_TILE) * per {
         for gx in cx0 * per..(cx0 + FAR_TILE) * per {
-            let Some((h, st, b, _)) = cell(gx, gz) else { continue };
-            if h == 0 {
-                continue;
-            }
+            let Some(c) = cell(gx, gz, false) else { continue };
             let (x0, z0) = ((gx * step) as f32, (gz * step) as f32);
-            let wpos = [gx * step, h - 1, gz * step];
-            let water = matches!(st >> 4, 8 | 9);
-            let rgb_of = |f: usize| -> (u16, u32) {
-                if water {
-                    return (t.fluid_tex[0][0], biome::biome(b).water_color);
-                }
-                if matches!(st >> 4, 10 | 11) {
-                    return (t.fluid_tex[1][0], 0xFFFFFF);
-                }
-                let (tex, tinted) = face_look(t, st, f);
-                (tex, if tinted { far_tint(t, st, b, wpos) } else { 0xFFFFFF })
+            let wpos = |y: i32| [gx * step, y, gz * step];
+            let sides = [(2usize, (0, -1)), (3, (0, 1)), (4, (-1, 0)), (5, (1, 0))];
+            let edge_of = |f: usize| match f {
+                2 => gz.rem_euclid(per) == 0,
+                3 => gz.rem_euclid(per) == per - 1,
+                4 => gx.rem_euclid(per) == 0,
+                _ => gx.rem_euclid(per) == per - 1,
             };
-            let top = if water { h as f32 - 0.125 } else { h as f32 };
-            let (tex, rgb) = rgb_of(1);
-            big_face(&mut geo, 1, [x0, top, z0], [x0 + s, top, z0 + s], tex, crate::mesh::tint_rgba(rgb, SHADE[1]), light);
-            // Paredes até a célula vizinha mais baixa (sem dados: um degrau curto, para não abrir buracos).
-            for (f, (dx, dz)) in [(2usize, (0, -1)), (3, (0, 1)), (4, (-1, 0)), (5, (1, 0))] {
-                let edge = match f {
-                    2 => gz.rem_euclid(per) == 0,
-                    3 => gz.rem_euclid(per) == per - 1,
-                    4 => gx.rem_euclid(per) == 0,
-                    _ => gx.rem_euclid(per) == per - 1,
-                };
-                let (hn, low) = match cell(gx + dx, gz + dz) {
-                    Some((hn, _, _, low)) => (hn as f32, low as f32),
-                    None => {
-                        let d = (h - 2 * step).max(0) as f32;
-                        (d, d)
-                    }
-                };
-                // Na divisa de chunks (onde pode estar a borda com o terreno de perto) a parede desce até o ponto
-                // mais baixo da vizinha; dentro do chunk, até o mais alto.
-                let floor = if edge { low.min(hn) } else { hn };
-                if floor >= top {
-                    // Água encostada em água na divisa de chunks: uma cortina de 12 blocos para baixo, dentro desta
-                    // célula. Quando a vizinha é do terreno de perto, quem olha pela água dela (de cima, inclinado)
-                    // vê a cortina em vez do fundo do céu.
-                    if water && edge {
-                        let (lo, hi) = match f {
-                            2 => ([x0, top - 12.0, z0 + 0.02], [x0 + s, top, z0 + 0.02]),
-                            3 => ([x0, top - 12.0, z0 + s - 0.02], [x0 + s, top, z0 + s - 0.02]),
-                            4 => ([x0 + 0.02, top - 12.0, z0], [x0 + 0.02, top, z0 + s]),
-                            _ => ([x0 + s - 0.02, top - 12.0, z0], [x0 + s - 0.02, top, z0 + s]),
-                        };
-                        let (tex, rgb) = rgb_of(f);
-                        big_face(&mut geo, f, lo, hi, tex, crate::mesh::tint_rgba(rgb, SHADE[f]), light);
-                    }
-                    continue;
-                }
-                // Degrau baixo (encosta) com a textura do topo; penhasco com a lateral.
-                let slope = top - hn <= (2 * step) as f32;
-                let hn = floor;
-                let (tex, rgb) = rgb_of(if slope { 1 } else { f });
-                let k = if slope { SHADE[f] * SURFACE_SIDE } else { SHADE[f] };
-                let rgba = crate::mesh::tint_rgba(rgb, k);
-                // Na divisa de chunks a parede sai duas vezes, 0,02 bloco para cada lado: o recorte do terreno de
-                // perto (por coluna) mantém a do lado de longe, e a borda perto/longe não abre fresta em nenhum
-                // sentido. Dentro do chunk, uma só.
-                let offsets: &[f32] = if edge { &[-0.02, 0.02] } else { &[0.0] };
+            // Parede vertical de `lo` a `hi` no lado `f`. Na divisa de chunks sai duas vezes, 0,02 bloco para cada
+            // lado: o recorte do terreno de perto (por coluna) mantém a do lado de longe.
+            let wall = |geo: &mut Geometry, f: usize, lo: f32, hi: f32, tex: u16, rgba: [u8; 4]| {
+                let offsets: &[f32] = if edge_of(f) { &[-0.02, 0.02] } else { &[0.0] };
                 for &o in offsets {
-                    let (lo, hi) = match f {
-                        2 => ([x0, hn, z0 + o], [x0 + s, top, z0 + o]),
-                        3 => ([x0, hn, z0 + s + o], [x0 + s, top, z0 + s + o]),
-                        4 => ([x0 + o, hn, z0], [x0 + o, top, z0 + s]),
-                        _ => ([x0 + s + o, hn, z0], [x0 + s + o, top, z0 + s]),
+                    let (a, b) = match f {
+                        2 => ([x0, lo, z0 + o], [x0 + s, hi, z0 + o]),
+                        3 => ([x0, lo, z0 + s + o], [x0 + s, hi, z0 + s + o]),
+                        4 => ([x0 + o, lo, z0], [x0 + o, hi, z0 + s]),
+                        _ => ([x0 + s + o, lo, z0], [x0 + s + o, hi, z0 + s]),
                     };
-                    big_face(&mut geo, f, lo, hi, tex, rgba, light);
+                    big_face(geo, f, a, b, tex, rgba, light);
                 }
+            };
+            for sp in c.spans() {
+                let (bot, top) = (sp.bottom as f32, sp.top as f32);
+                let (tex, rgb) = look(sp.top_state, 1, c.biome, wpos(sp.top as i32 - 1));
+                big_face(&mut m.opaque, 1, [x0, top, z0], [x0 + s, top, z0 + s], tex, crate::mesh::tint_rgba(rgb, SHADE[1]), light);
+                // Fundo só onde dá para ver: com vão embaixo na própria coluna (ilha sobre o chão) ou acima do chão de
+                // alguma vizinha (borda de mapa no vazio). O fundo de um chão normal fica escondido e não entra.
+                let gap_below = c.spans().iter().any(|q| q.top <= sp.bottom);
+                let open_below = gap_below || sides.iter().any(|&(_, (dx, dz))| cell(gx + dx, gz + dz, false).is_some_and(|n| n.top() <= sp.bottom as i32));
+                if sp.bottom > 0 && open_below {
+                    let (tex, rgb) = look(sp.fill_state, 0, c.biome, wpos(sp.bottom as i32));
+                    big_face(&mut m.opaque, 0, [x0, bot, z0], [x0 + s, bot, z0 + s], tex, crate::mesh::tint_rgba(rgb, SHADE[0]), light);
+                }
+                for (f, (dx, dz)) in sides {
+                    let cover: Vec<(f32, f32)> = match cell(gx + dx, gz + dz, edge_of(f)) {
+                        Some(n) => n.spans().iter().map(|q| (q.bottom as f32, q.top as f32)).collect(),
+                        // Sem dados ao lado: um degrau curto, sem parede até o fundo.
+                        None => vec![(bot, (top - 2.0 * s).max(bot))],
+                    };
+                    for (lo, hi) in uncovered(bot, top, &cover) {
+                        // Bloco de cima com a lateral dele; o resto com a lateral do bloco de dentro.
+                        let cut = (top - 1.0).clamp(lo, hi);
+                        if hi > cut {
+                            let (tex, rgb) = look(sp.top_state, f, c.biome, wpos(sp.top as i32 - 1));
+                            wall(&mut m.opaque, f, cut, hi, tex, crate::mesh::tint_rgba(rgb, SHADE[f]));
+                        }
+                        if cut > lo {
+                            let (tex, rgb) = look(sp.fill_state, f, c.biome, wpos(sp.top as i32 - 4));
+                            wall(&mut m.opaque, f, lo, cut, tex, crate::mesh::tint_rgba(rgb, SHADE[f]));
+                        }
+                    }
+                }
+            }
+            // Copa: placa da espessura das folhas, sem nada embaixo.
+            if c.canopy > 0 && c.canopy as i32 > c.top() {
+                let top = c.canopy as f32;
+                let bot = (top - c.canopy_depth.max(1) as f32).max(c.top() as f32);
+                let st = c.canopy_state;
+                let (tex, rgb) = look(st, 1, c.biome, wpos(c.canopy as i32 - 1));
+                big_face(&mut m.opaque, 1, [x0, top, z0], [x0 + s, top, z0 + s], tex, crate::mesh::tint_rgba(rgb, SHADE[1]), light);
+                if bot > c.top() as f32 {
+                    big_face(&mut m.opaque, 0, [x0, bot, z0], [x0 + s, bot, z0 + s], tex, crate::mesh::tint_rgba(rgb, SHADE[0]), light);
+                }
+                for (f, (dx, dz)) in sides {
+                    let cover: Vec<(f32, f32)> = match cell(gx + dx, gz + dz, false) {
+                        Some(n) if n.canopy as i32 > n.top() => vec![((n.canopy as f32 - n.canopy_depth.max(1) as f32), n.canopy as f32), (0.0, n.top() as f32)],
+                        Some(n) => vec![(0.0, n.top() as f32)],
+                        None => Vec::new(),
+                    };
+                    for (lo, hi) in uncovered(bot, top, &cover) {
+                        wall(&mut m.opaque, f, lo, hi, tex, crate::mesh::tint_rgba(rgb, SHADE[f]));
+                    }
+                }
+            }
+            // Água: só a superfície, translúcida e com a cor do bioma (o fundo aparece embaixo).
+            if c.water > 0 && c.water as i32 > c.top() {
+                let y = c.water as f32 - 0.125;
+                let rgb = biome::biome(c.biome).water_color;
+                big_face(&mut m.translucent, 1, [x0, y, z0], [x0 + s, y, z0 + s], t.fluid_tex[0][0], crate::mesh::tint_rgba(rgb, 1.0), light);
             }
         }
     }
-    geo
+    m
 }
 
 #[cfg(test)]
@@ -460,12 +621,52 @@ mod tests {
         assert!(m.opaque.is_empty() && m.translucent.is_empty());
     }
 
+    /// Coluna com chão até y = 63 (grama no topo), uma árvore em (3, 5) (tronco até 69, copa 68 a 71), um lago
+    /// em (8, 8) (fundo 60, água até 62) e uma ilha flutuante de 90 a 94 em (12, 12).
+    fn coluna() -> Column {
+        let mut col = Column::default();
+        let mut put = |x: i32, y: i32, z: i32, st: u16| {
+            let s = col.sections[(y >> 4) as usize].get_or_insert_with(|| Box::new(Section::empty(true)));
+            s.blocks[Section::index(x, y & 15, z)] = st;
+        };
+        for z in 0..16 {
+            for x in 0..16 {
+                let top = if (x, z) == (8, 8) { 60 } else { 63 };
+                for y in 40..=top {
+                    put(x, y, z, if y == top { 2 << 4 } else if y > top - 3 { 3 << 4 } else { 1 << 4 });
+                }
+            }
+        }
+        for y in 61..=62 {
+            put(8, y, 8, 9 << 4);
+        }
+        for y in 64..70 {
+            put(3, y, 5, 17 << 4);
+        }
+        for y in 68..72 {
+            put(3, y, 5, 18 << 4);
+            put(4, y, 5, 18 << 4);
+        }
+        for y in 90..95 {
+            put(12, y, 12, 3 << 4);
+        }
+        col
+    }
+
     #[test]
-    fn resumo_ida_e_volta() {
-        let mut c = FarColumn::default();
-        c.height[5] = 70;
-        c.state[5] = 2 << 4;
-        c.biome[5] = 4;
+    fn resumo_tem_trechos_copa_e_agua() {
+        let t = BlockTable::new();
+        let c = FarColumn::summarize(&coluna(), &t);
+        let at = |x: usize, z: usize| c.cells[z * 16 + x];
+        let chao = at(0, 0);
+        assert_eq!((chao.n, chao.spans[0].bottom, chao.spans[0].top, chao.spans[0].top_state, chao.spans[0].fill_state), (1, 40, 64, 2 << 4, 1 << 4));
+        // Tronco não vira pilar: a árvore é chão até 64 e copa de 72 com 4 de espessura.
+        let arvore = at(3, 5);
+        assert_eq!((arvore.top(), arvore.canopy, arvore.canopy_depth), (64, 72, 4));
+        let lago = at(8, 8);
+        assert_eq!((lago.top(), lago.water), (61, 63));
+        let ilha = at(12, 12);
+        assert_eq!((ilha.n, ilha.spans[0].bottom, ilha.spans[0].top, ilha.spans[1].top), (2, 90, 95, 64));
         let mut b = Vec::new();
         c.to_bytes(&mut b);
         assert_eq!(b.len(), FAR_COLUMN_BYTES);
@@ -473,23 +674,23 @@ mod tests {
     }
 
     #[test]
-    fn terreno_de_longe_tem_topo_e_paredes() {
+    fn terreno_de_longe_sem_pilar() {
         let t = BlockTable::new();
-        let mut c = FarColumn::default();
-        for i in 0..256 {
-            c.height[i] = 64;
-            c.state[i] = 2 << 4;
-        }
-        // Um degrau de 4 blocos na metade x >= 8 da coluna.
-        for z in 0..16 {
-            for x in 8..16 {
-                c.height[z * 16 + x] = 68;
-            }
-        }
+        let c = FarColumn::summarize(&coluna(), &t);
         let get = |cx: i32, cz: i32| (cx == 0 && cz == 0).then_some(&c);
-        let g = mesh_far_tile(0, 0, 4, &t, &get);
-        let tops = g.vertices.chunks(4).filter(|q| q.iter().all(|v| v.pos[1] == q[0].pos[1])).count();
-        assert!(tops >= 16);
-        assert!(g.vertices.iter().any(|v| v.pos[1] == 68.0) && g.vertices.iter().any(|v| v.pos[1] == 64.0));
+        let m = mesh_far_tile(0, 0, 1, &t, &get);
+        let quads: Vec<&[Vertex]> = m.opaque.vertices.chunks(4).collect();
+        // Nada da ilha (x 12..13, z 12..13) desce abaixo do fundo dela, e nada sai da copa até o chão.
+        let ilha = |q: &&&[Vertex]| q.iter().all(|v| (12.0..=13.0).contains(&v.pos[0]) && (12.0..=13.0).contains(&v.pos[2]) && v.pos[1] > 64.5);
+        assert!(quads.iter().filter(ilha).count() >= 6);
+        assert!(quads.iter().filter(ilha).all(|q| q.iter().all(|v| v.pos[1] >= 90.0)));
+        assert!(quads.iter().filter(ilha).any(|q| q.iter().all(|v| v.pos[1] == 90.0)), "ilha sem fundo");
+        // O fundo do chão (y = 40) fica escondido: nenhuma face lá.
+        assert!(!quads.iter().any(|q| q.iter().all(|v| v.pos[1] == 40.0)));
+        let copa = |q: &&&[Vertex]| q.iter().all(|v| (3.0..=5.0).contains(&v.pos[0]) && (5.0..=6.0).contains(&v.pos[2]) && v.pos[1] > 64.5);
+        assert!(quads.iter().filter(copa).count() >= 2);
+        assert!(quads.iter().filter(copa).all(|q| q.iter().all(|v| v.pos[1] >= 68.0)));
+        // Água só translúcida, na superfície.
+        assert!(!m.translucent.is_empty() && m.translucent.vertices.iter().all(|v| v.pos[1] == 62.875));
     }
 }

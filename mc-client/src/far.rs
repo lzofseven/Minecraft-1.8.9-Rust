@@ -12,22 +12,24 @@ use std::time::{Duration, Instant};
 
 use mc_render::Renderer;
 use mc_world::blocks::BlockTable;
-use mc_world::lod::{mesh_far_tile, FarColumn, FAR_COLUMN_BYTES, FAR_TILE};
-use mc_world::mesh::Geometry;
+use mc_world::chunk::Column;
+use mc_world::lod::{mesh_far_tile, FarColumn, FarMesh, FAR_COLUMN_BYTES, FAR_TILE};
 use mc_world::World;
 
 type Col = (i32, i32);
 
 const REGION: i32 = 32;
-const MAGIC: &[u8; 8] = b"LZLOD\x001\x00";
-/// Colunas resumidas e blocos de longe pedidos por quadro.
-const SUMMARIZE_BUDGET: usize = 96;
+/// Versão 2: trechos verticais, água e copa por coluna (as regiões da versão 1 são ignoradas).
+const MAGIC: &[u8; 8] = b"LZLOD\x002\x00";
+/// Colunas mandadas para resumir e blocos de longe pedidos por quadro.
+const SUMMARIZE_BUDGET: usize = 32;
 const MESH_BUDGET: usize = 6;
 const SAVE_EVERY: Duration = Duration::from_secs(30);
 
 enum Done {
     Region { world: u32, key: Col, cols: Vec<(Col, FarColumn)> },
-    Tile { world: u32, key: Col, want: (i32, u32), geo: Geometry },
+    Tile { world: u32, key: Col, want: (i32, u32), mesh: FarMesh },
+    Summary { world: u32, key: Col, col: FarColumn },
 }
 
 pub struct Far {
@@ -262,17 +264,16 @@ impl Far {
             self.pending.extend(world.columns.keys().copied());
         }
         // 1. Resumos das colunas do mundo.
+        // A varredura é da coluna inteira: vai para os trabalhadores com uma cópia das seções.
         let take: Vec<Col> = self.pending.iter().copied().take(SUMMARIZE_BUDGET).collect();
         for c in take {
             self.pending.remove(&c);
             let Some(col) = world.columns.get(&c) else { continue };
-            let s = FarColumn::summarize(col, table);
-            if self.cols.get(&c).is_some_and(|old| **old == s) {
-                continue;
-            }
-            self.cols.insert(c, Arc::new(s));
-            self.dirty.insert(region_of(c));
-            self.touch(c);
+            let copy = Column { sections: col.sections.clone(), biomes: col.biomes.clone() };
+            let (tx, table, w) = (self.tx.clone(), table.clone(), self.world);
+            rayon::spawn(move || {
+                let _ = tx.send(Done::Summary { world: w, key: c, col: FarColumn::summarize(&copy, &table) });
+            });
         }
         // 2. Regiões do disco dentro do alcance.
         let rr = distance / REGION + 1;
@@ -295,10 +296,18 @@ impl Far {
                         }
                     }
                 }
-                Done::Tile { world: w, key, want, geo } if w == self.world => {
+                Done::Summary { world: w, key, col } if w == self.world => {
+                    if self.cols.get(&key).is_some_and(|old| **old == col) {
+                        continue;
+                    }
+                    self.cols.insert(key, Arc::new(col));
+                    self.dirty.insert(region_of(key));
+                    self.touch(key);
+                }
+                Done::Tile { world: w, key, want, mesh } if w == self.world => {
                     self.in_flight.remove(&key);
                     if let Some(r) = renderer.as_deref_mut() {
-                        r.upload_far(key, &geo);
+                        r.upload_far(key, &mesh.opaque, &mesh.translucent);
                     }
                     self.tiles.insert(key, want);
                     self.changed = true;
@@ -348,7 +357,15 @@ impl Far {
                 let fx = (pc.0 - (c0x + FAR_TILE / 2)) as i64;
                 let fz = (pc.1 - (c0z + FAR_TILE / 2)) as i64;
                 let d2 = fx * fx + fz * fz;
-                let step = if d2 <= 32 * 32 { 4 } else { 8 };
+                // Células de 1 bloco perto (onde o servidor manda poucos chunks, o terreno de longe começa colado
+                // no de perto), maiores com a distância da coluna mais perto do bloco.
+                let near2 = nx * nx + nz * nz;
+                let step = match near2 {
+                    0..=64 => 1,
+                    65..=256 => 2,
+                    257..=1024 => 4,
+                    _ => 8,
+                };
                 let want = (step, self.rev.get(&key).copied().unwrap_or(0));
                 if self.tiles.get(&key) != Some(&want) && !self.in_flight.contains(&key) {
                     jobs.push((d2, key, want));
@@ -382,8 +399,8 @@ impl Far {
             let (tx, table, w) = (self.tx.clone(), table.clone(), self.world);
             rayon::spawn(move || {
                 let get = |x: i32, z: i32| part.get(&(x, z)).map(|c| &**c);
-                let geo = mesh_far_tile(c0x, c0z, want.0, &table, &get);
-                let _ = tx.send(Done::Tile { world: w, key, want, geo });
+                let mesh = mesh_far_tile(c0x, c0z, want.0, &table, &get);
+                let _ = tx.send(Done::Tile { world: w, key, want, mesh });
             });
         }
         self.maybe_save();
@@ -404,10 +421,10 @@ mod tests {
     fn regiao_ida_e_volta_no_disco() {
         let dir = std::env::temp_dir().join(format!("mine-rs-lod-teste-{}", std::process::id()));
         let mut a = FarColumn::default();
-        a.height[3] = 77;
-        a.state[3] = 1 << 4;
+        a.cells[3].n = 1;
+        a.cells[3].spans[0] = mc_world::lod::Span { bottom: 70, top: 77, top_state: 1 << 4, fill_state: 1 << 4 };
         let mut b = FarColumn::default();
-        b.height[255] = 12;
+        b.cells[255].water = 12;
         let r = (-1, 2);
         let cols = vec![((-32, 64), Arc::new(a.clone())), ((-1, 95), Arc::new(b.clone()))];
         let path = region_path(&dir, r);

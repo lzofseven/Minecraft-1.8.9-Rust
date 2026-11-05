@@ -1733,7 +1733,7 @@ impl Game {
             let t = since.elapsed().as_secs_f32();
             if t >= 5.0 {
                 println!(
-                    "[stats] {:.1} ticks/s, {:.0} quadros/s, coberta: {}, colunas: {}, seções por montar: {}, desenhadas: {}, longe: {}, jogador: {:.2} {:.2} {:.2} olhando {:.1} {:.1}",
+                    "[stats] {:.1} ticks/s, {:.0} quadros/s, coberta: {}, colunas: {}, seções por montar: {}, desenhadas: {}, longe: {} ({} mil quads), jogador: {:.2} {:.2} {:.2} olhando {:.1} {:.1}",
                     *ticks as f32 / t,
                     *frames as f32 / t,
                     self.occluded,
@@ -1741,6 +1741,7 @@ impl Game {
                     self.world.dirty.len() + self.mesh_in_flight,
                     self.renderer.as_ref().map_or(0, |r| r.drawn_sections.get()),
                     self.far.tile_count(),
+                    self.renderer.as_ref().map_or(0, |r| r.far_quads() / 1000),
                     self.player.pos.x,
                     self.player.pos.y,
                     self.player.pos.z,
