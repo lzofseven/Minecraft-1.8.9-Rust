@@ -145,7 +145,7 @@ Sem conta salva, o jogo abre a tela **Conta** (também no botão "Conta" do menu
 - **Entrar com Microsoft:** o jogo mostra um link e um código. Abra o link, digite o código e aprove. A conta fica salva em `~/.config/mine-rs/conta.json`, que só o seu usuário lê, e o token é renovado sozinho.
 - **Jogar offline:** escolha um nick com 3 a 16 letras, números ou `_`.
 
-O login Microsoft precisa do Client ID de um app seu no Azure com acesso à API do Minecraft. Informe pela variável `MINE_RS_MS_CLIENT_ID` ou pelo arquivo `~/.config/mine-rs/microsoft-client-id`.
+Não precisa configurar nada: o app do projeto ("Minecraft 1.8.9 Rust") já vem no jogo, e é o nome dele que aparece na tela de login da Microsoft. Quem preferir usar um app próprio do Azure pode trocar pelo Client ID dele com a variável `MINE_RS_MS_CLIENT_ID` ou o arquivo `~/.config/mine-rs/microsoft-client-id`.
 
 | Opção | O que faz |
 | --- | --- |

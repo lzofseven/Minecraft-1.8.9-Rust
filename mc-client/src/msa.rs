@@ -1,8 +1,8 @@
 //! Conta do jogador: login Microsoft pelo código de dispositivo (Microsoft → Xbox Live → XSTS → Minecraft) ou
 //! um nick offline. A conta fica em `conta.json` na pasta de configuração e o token é renovado sozinho.
 //!
-//! O app Microsoft (Azure) é do usuário: `MINE_RS_MS_CLIENT_ID` ou o arquivo `microsoft-client-id` na pasta de
-//! configuração. Sem ele, só o modo offline funciona.
+//! O app Microsoft (Azure) do projeto vem embutido (`CLIENT_ID`): o jogador só abre o link e digita o código.
+//! `MINE_RS_MS_CLIENT_ID` ou o arquivo `microsoft-client-id` na pasta de configuração trocam por outro app.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -38,10 +38,14 @@ fn path() -> PathBuf {
 }
 
 /// O Client ID do app Microsoft do usuário.
+/// App "Minecraft 1.8.9 Rust" no Azure (contas pessoais da Microsoft, fluxo de cliente público). Um Client ID
+/// não é segredo: identifica o app na tela de login da Microsoft.
+pub const CLIENT_ID: &str = "09922b5b-7377-4cf2-9d16-aa12862adb07";
+
 pub fn client_id() -> Option<String> {
-    let id = std::env::var("MINE_RS_MS_CLIENT_ID").ok().or_else(|| std::fs::read_to_string(crate::settings::config_dir().join("microsoft-client-id")).ok())?;
-    let id = id.trim().to_string();
-    (!id.is_empty()).then_some(id)
+    let custom = std::env::var("MINE_RS_MS_CLIENT_ID").ok().or_else(|| std::fs::read_to_string(crate::settings::config_dir().join("microsoft-client-id")).ok());
+    let id = custom.map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).unwrap_or_else(|| CLIENT_ID.to_string());
+    Some(id)
 }
 
 /// Nick do Minecraft: 3 a 16 letras, números ou `_`.
