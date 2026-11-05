@@ -3183,6 +3183,10 @@ impl Game {
     /// Sai do servidor e mostra `screen` (lista ou motivo da desconexão).
     fn leave(&mut self, screen: crate::menu::Screen) {
         self.net = None;
+        // NetHandlerPlayClient novo a cada conexão: o playerInfoMap (lista do tab) começa vazio. O reset_world
+        // só limpa as entidades do mundo (o S01/S07 da mesma conexão mantém a lista), então os nicks do servidor
+        // anterior ficavam no tab do próximo.
+        self.entities.players.clear();
         self.clear_server_pack();
         self.reset_world(0);
         self.hud = Hud::default();
