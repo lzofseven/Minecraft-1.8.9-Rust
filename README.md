@@ -9,6 +9,7 @@ Para jogar em servidores 1.8 com o jogo vanilla de sempre, mas usando uma fraç�
 ![Protocolo](https://img.shields.io/badge/protocolo-47%20(1.8.x)-3fb950)
 ![Gráficos](https://img.shields.io/badge/gr%C3%A1ficos-wgpu%20%2F%20Vulkan-8957e5)
 ![RAM](https://img.shields.io/badge/RAM-~150%20MB-1f6feb)
+![Licença](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-blue)
 
 <img src="docs/tela-mundo.png" alt="Mundo do jogo com mobs, construções e a mão do jogador" width="820">
 
@@ -27,6 +28,7 @@ Para jogar em servidores 1.8 com o jogo vanilla de sempre, mas usando uma fraç�
 - [Como funciona](#como-funciona)
 - [Estrutura do código](#estrutura-do-código)
 - [Testes](#testes)
+- [Licença](#licença)
 - [Aviso legal](#aviso-legal)
 - [English](#english)
 
@@ -202,6 +204,10 @@ cargo test --release
 
 São mais de 350 testes: protocolo, física, iluminação, malhas, céu, chat, inventários, receitas e renderização das entidades, quase todos comparando com valores tirados do jogo original.
 
+## Licença
+
+Código sob a [GPL-3.0](LICENSE): use, estude, modifique e distribua à vontade. Quem distribuir uma versão modificada precisa publicar o código dela sob a mesma licença.
+
 ## Aviso legal
 
 Projeto independente, **sem ligação com a Mojang ou a Microsoft**. Minecraft é marca da Mojang AB. O repositório não contém nenhum arquivo do jogo: texturas, sons e modelos são lidos da sua própria cópia do Minecraft 1.8.9.
@@ -218,4 +224,4 @@ target/release/mc-client            # menu
 target/release/mc-client host:port  # join a server
 ```
 
-Tested on Linux with Vulkan. Not affiliated with Mojang or Microsoft.
+Tested on Linux with Vulkan. Licensed under [GPL-3.0](LICENSE). Not affiliated with Mojang or Microsoft.
