@@ -14,8 +14,8 @@ use crate::visgraph::{is_opaque, SetVisibility, VisGraph};
 /// Atlas quadrado com 32x32 texturas de 16 px.
 pub const ATLAS_COLS: u32 = 32;
 
-const SHADE: [f32; 6] = [0.5, 1.0, 0.8, 0.8, 0.6, 0.6];
-const DIRS: [[i32; 3]; 6] = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+pub(crate) const SHADE: [f32; 6] = [0.5, 1.0, 0.8, 0.8, 0.6, 0.6];
+pub(crate) const DIRS: [[i32; 3]; 6] = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
 /// Eixos tangentes de cada face (para a luz dos cantos).
 const TANGENTS: [[usize; 2]; 6] = [[0, 2], [0, 2], [0, 1], [0, 1], [2, 1], [2, 1]];
 /// Brilho por nível de oclusão (0 = canto fechado).
@@ -183,7 +183,7 @@ fn cross(geo: &mut Geometry, base: [f32; 3], tex: u16, rgba: [u8; 4], light: [u8
     }
 }
 
-fn tint_for(info: &BlockInfo, f: usize) -> u32 {
+pub(crate) fn tint_for(info: &BlockInfo, f: usize) -> u32 {
     if info.tint_top_only && f != UP {
         0xFFFFFF
     } else {
@@ -237,9 +237,9 @@ const NEIGHBORS: [[usize; 4]; 6] = [
     [0, 1, 2, 3],
 ];
 
-struct Ctx<'a> {
-    p: &'a Padded,
-    t: &'a BlockTable,
+pub(crate) struct Ctx<'a> {
+    pub(crate) p: &'a Padded,
+    pub(crate) t: &'a BlockTable,
 }
 
 fn add(a: [i32; 3], f: usize) -> [i32; 3] {
@@ -344,7 +344,7 @@ impl Ctx<'_> {
     }
 
     /// `Block.colorMultiplier(world, pos)`: cor por bioma quando as colormaps do jar estão carregadas.
-    fn tint_at(&self, st: u16, pos: [i32; 3], wpos: [i32; 3]) -> u32 {
+    pub(crate) fn tint_at(&self, st: u16, pos: [i32; 3], wpos: [i32; 3]) -> u32 {
         let Some(maps) = &self.t.colormaps else { return self.t.tint_color(st) };
         let (id, m) = (st >> 4, st & 15);
         let origin = [wpos[0] - pos[0], wpos[2] - pos[2]];

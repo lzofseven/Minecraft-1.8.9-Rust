@@ -21,6 +21,7 @@ image.workspace = true
 winit.workspace = true
 pollster.workspace = true
 rayon.workspace = true
+flate2.workspace = true
 rodio.workspace = true
 ab_glyph = "0.2.32"
 zip.workspace = true

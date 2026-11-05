@@ -1445,6 +1445,7 @@ name = "mc-client"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "flate2",
  "glam",
  "hickory-resolver",
  "image",

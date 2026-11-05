@@ -15,6 +15,7 @@ mod debug_overlay;
 mod demo;
 mod entities;
 mod entity_net;
+mod far;
 mod first_person;
 mod font_text;
 mod fx;

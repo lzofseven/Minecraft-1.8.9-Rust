@@ -60,6 +60,9 @@ pub enum Opt {
     ReducedDebugInfo,
     EntityShadows,
     RealmsNotifications,
+    /// Não existem no jogo original: malhas simplificadas longe e terreno guardado além da distância.
+    Lod,
+    LodDistance,
 }
 
 impl Opt {
@@ -113,6 +116,8 @@ impl Opt {
             ReducedDebugInfo => ("options.reducedDebugInfo", false, true, 0.0, 1.0, 0.0),
             EntityShadows => ("options.entityShadows", false, true, 0.0, 1.0, 0.0),
             RealmsNotifications => ("options.realmsNotifications", false, true, 0.0, 1.0, 0.0),
+            Lod => ("LOD", false, true, 0.0, 1.0, 0.0),
+            LodDistance => ("Distância LOD", true, false, 0.0, 96.0, 8.0),
         }
     }
 
@@ -262,6 +267,10 @@ pub struct Settings {
     pub use_native_transport: bool,
     pub entity_shadows: bool,
     pub realms_notifications: bool,
+    /// Opção "LOD" (`lod` no options.txt, só gravada quando ligada).
+    pub lod: bool,
+    /// Opção "Distância LOD" em chunks; 0 = desligada (`lodDistance`, só gravada quando ligada).
+    pub lod_distance: i32,
     pub keys: Vec<KeyBind>,
     /// Volume por categoria, na ordem de `SOUND_CATEGORIES`.
     pub sound: [f32; 9],
@@ -336,6 +345,8 @@ impl Default for Settings {
             use_native_transport: true,
             entity_shadows: true,
             realms_notifications: true,
+            lod: false,
+            lod_distance: 0,
             keys: KEYS.iter().map(|&(desc, code, category)| KeyBind { desc, code, default: code, category }).collect(),
             sound: [1.0; 9],
             model_parts: 0x7F,
@@ -486,6 +497,8 @@ impl Settings {
             "useNativeTransport" => self.use_native_transport = b,
             "entityShadows" => self.entity_shadows = b,
             "realmsNotifications" => self.realms_notifications = b,
+            "lod" => self.lod = b,
+            "lodDistance" => return set!(self.lod_distance, i()),
             _ => {
                 if let Some(desc) = k.strip_prefix("key_") {
                     if let Some(kb) = self.keys.iter_mut().find(|kb| kb.desc == desc) {
@@ -584,6 +597,13 @@ impl Settings {
             format!("entityShadows:{}", self.entity_shadows),
             format!("realmsNotifications:{}", self.realms_notifications),
         ];
+        // Opções sem par no jogo: desligadas, o arquivo fica igual ao do Java.
+        if self.lod {
+            out.push("lod:true".into());
+        }
+        if self.lod_distance > 0 {
+            out.push(format!("lodDistance:{}", self.lod_distance));
+        }
         out.extend(self.keys.iter().map(|k| format!("key_{}:{}", k.desc, k.code)));
         out.extend(SOUND_CATEGORIES.iter().zip(self.sound).map(|(c, v)| format!("soundCategory_{c}:{}", jf(v))));
         out.extend(MODEL_PARTS.iter().enumerate().map(|(i, p)| format!("modelPart_{p}:{}", self.model_parts & (1 << i) != 0)));
@@ -618,6 +638,7 @@ impl Settings {
             FramerateLimit => self.max_fps as f32,
             MipmapLevels => self.mipmap_levels as f32,
             RenderDistance => self.render_distance as f32,
+            LodDistance => self.lod_distance as f32,
             StreamBytesPerPixel => self.stream_bytes_per_pixel,
             StreamVolumeMic => self.stream_mic_volume,
             StreamVolumeSystem => self.stream_system_volume,
@@ -642,6 +663,7 @@ impl Settings {
             ChatScale => self.chat_scale = v,
             MipmapLevels => self.mipmap_levels = v as i32,
             RenderDistance => self.render_distance = v as i32,
+            LodDistance => self.lod_distance = v as i32,
             StreamBytesPerPixel => self.stream_bytes_per_pixel = v,
             StreamVolumeMic => self.stream_mic_volume = v,
             StreamVolumeSystem => self.stream_system_volume = v,
@@ -672,6 +694,7 @@ impl Settings {
             ReducedDebugInfo => self.reduced_debug_info,
             EntityShadows => self.entity_shadows,
             RealmsNotifications => self.realms_notifications,
+            Lod => self.lod,
             _ => false,
         }
     }
@@ -708,6 +731,7 @@ impl Settings {
             ReducedDebugInfo => self.reduced_debug_info ^= true,
             EntityShadows => self.entity_shadows ^= true,
             RealmsNotifications => self.realms_notifications ^= true,
+            Lod => self.lod ^= true,
             _ => {}
         }
         self.save();
@@ -716,7 +740,10 @@ impl Settings {
     /// Texto do botão (`GameSettings.getKeyBinding`).
     pub fn display(&self, o: Opt) -> String {
         use Opt::*;
-        let s = format!("{}: ", tr(o.key()));
+        let s = match o {
+            Lod | LodDistance => format!("{}: ", o.key()),
+            _ => format!("{}: ", tr(o.key())),
+        };
         if o.is_float() {
             let f1 = self.float(o);
             let f = o.normalize(f1);
@@ -737,6 +764,8 @@ impl Settings {
                 ChatHeightUnfocused | ChatHeightFocused => format!("{s}{}px", chat_height(f)),
                 ChatWidth => format!("{s}{}px", chat_width(f)),
                 RenderDistance => format!("{s}{} chunks", f1 as i32),
+                LodDistance if f1 == 0.0 => s + &tr("options.off"),
+                LodDistance => format!("{s}{} chunks", f1 as i32),
                 MipmapLevels if f1 == 0.0 => s + &tr("options.off"),
                 MipmapLevels => format!("{s}{}", f1 as i32),
                 _ if f == 0.0 => s + &tr("options.off"),

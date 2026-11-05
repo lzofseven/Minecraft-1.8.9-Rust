@@ -247,6 +247,12 @@ struct Game {
     versions: HashMap<Key, u32>,
     /// Visibilidade de cada seção com malha (`MeshData::visibility`); a BFS de `culling` lê daqui.
     vis: HashMap<Key, SetVisibility>,
+    /// Opção "LOD": nível da malha de cada seção (sem entrada = malha cheia) e a coluna do jogador e o estado da
+    /// opção da última revisão dos níveis.
+    lod_levels: HashMap<Key, u8>,
+    lod_seen: Option<(bool, i32, i32)>,
+    /// Opção "Distância LOD": terreno de longe guardado em disco.
+    far: crate::far::Far,
     fps_frames: u32,
     fps_timer: Instant,
     /// `RenderChunk.renderChunksUpdated`: malhas enviadas neste segundo e no anterior (F3).
@@ -322,11 +328,12 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
     menu.show(screen);
     menu.account = if opts.login { String::new() } else { opts.session.as_ref().map_or(opts.name.clone(), |s| s.name.clone()) };
     menu.login_status = opts.login_error.iter().cloned().collect();
-    // Só para prints das telas sem entrar em servidor: MINE_RS_TELA=pausa|conectando|opcoes.
+    // Só para prints das telas sem entrar em servidor: MINE_RS_TELA=pausa|conectando|opcoes|video.
     match std::env::var("MINE_RS_TELA").as_deref() {
         Ok("pausa") => menu.show(crate::menu::Screen::Pause),
         Ok("conectando") => menu.show(crate::menu::Screen::Connecting(String::new())),
         Ok("opcoes") => menu.show(crate::menu::Screen::Options),
+        Ok("video") => menu.show(crate::menu::Screen::Video),
         Ok("pacotes") => {
             menu.show(crate::menu::Screen::Options);
             menu.open_packs();
@@ -425,6 +432,9 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
         mesh_rx,
         versions: HashMap::new(),
         vis: HashMap::new(),
+        lod_levels: HashMap::new(),
+        lod_seen: None,
+        far: crate::far::Far::default(),
         fps_frames: 0,
         fps_timer: Instant::now(),
         chunk_updates: 0,
@@ -477,6 +487,7 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
     event_loop.run_app(&mut game)?;
+    game.far.save(true);
     if let Some(r) = game.exit_reason {
         println!("desconectado: {}", crate::hud::plain(&r));
     }
@@ -487,6 +498,7 @@ impl Game {
     fn start_test_world(&mut self) {
         use crate::test_world::{env, held};
         self.world = crate::test_world::build();
+        self.far.set_world(Some(crate::far::world_dir(&crate::setup::data_dir(), "teste", 0, (0, 0))), None);
         // Id do próprio jogador no mundo de teste (o anzol de MINE_RS_TEST_OBJ aponta para ele).
         self.entities.own_id = Some(-2);
         let cols: Vec<(i32, i32)> = self.world.columns.keys().copied().collect();
@@ -500,6 +512,11 @@ impl Game {
             .unwrap_or((0.0, 10.0));
         self.player.teleport(DVec3::new(0.5, 64.0, 0.5), yaw, pitch);
         self.player.allow_flying = true;
+        // MINE_RS_TEST_ALTURA=y: voando nessa altura (prints de longe).
+        if let Some(y) = env("ALTURA").and_then(|v| v.parse::<f64>().ok()) {
+            self.player.teleport(DVec3::new(0.5, y, 0.5), yaw, pitch);
+            self.player.flying = true;
+        }
         self.hud.health = 20.0;
         // MINE_RS_TEST_PARTICULAS: semente fixa para as execuções darem a mesma imagem.
         if crate::particles::Particles::test_hook().is_some() {
@@ -654,6 +671,10 @@ impl Game {
         self.atmos.reset(dimension);
         self.versions.clear();
         self.vis.clear();
+        self.lod_levels.clear();
+        self.lod_seen = None;
+        // O terreno de longe espera o S05 (ponto de spawn) para saber qual mundo é.
+        self.far.set_world(None, self.renderer.as_mut());
         self.entities.clear();
         self.tiles.clear();
         self.particles.clear();
@@ -746,22 +767,26 @@ impl Game {
                     let at = (c.x, c.z);
                     self.world.apply(c);
                     self.tiles.scan_column(&self.world, at.0, at.1);
+                    self.far.column_changed(at.0, at.1);
                 }
                 NetEvent::Chunks(v) => {
                     for c in v {
                         let at = (c.x, c.z);
                         self.world.load(c);
                         self.tiles.scan_column(&self.world, at.0, at.1);
+                        self.far.column_changed(at.0, at.1);
                     }
                 }
                 NetEvent::BlockChange { x, y, z, state } => {
                     self.world.set_block(x, y, z, state);
                     self.tiles.block_changed(x, y, z, state);
+                    self.far.column_changed(x >> 4, z >> 4);
                 }
                 NetEvent::MultiBlockChange(v) => {
                     for (x, y, z, s) in v {
                         self.world.set_block(x, y, z, s);
                         self.tiles.block_changed(x, y, z, s);
+                        self.far.column_changed(x >> 4, z >> 4);
                     }
                 }
                 // `handleUpdateSign`: a placa em edição (`setEditable(false)`) ignora o servidor.
@@ -1045,7 +1070,15 @@ impl Game {
                     }
                     self.player.vel += DVec3::new(e.push[0] as f64, e.push[1] as f64, e.push[2] as f64);
                 }
-                NetEvent::SpawnPos { x, z } => self.spawn_pos = (x, z),
+                NetEvent::SpawnPos { x, z } => {
+                    self.spawn_pos = (x, z);
+                    // Opção "Distância LOD": uma pasta por servidor, dimensão e ponto de spawn (os mundos atrás de
+                    // um proxy usam o mesmo endereço e a mesma dimensão; o 1.8 não manda o nome do mundo).
+                    if !self.server.is_empty() {
+                        let dir = crate::far::world_dir(&crate::setup::data_dir(), &self.server, self.dimension, (x, z));
+                        self.far.set_world(Some(dir), self.renderer.as_mut());
+                    }
+                }
                 NetEvent::WorldBorder(p) => self.border.apply(&p),
                 // handleCamera: só troca se a entidade existe; o próprio id volta ao jogador.
                 NetEvent::Camera(id) => {
@@ -1522,7 +1555,39 @@ impl Game {
         });
     }
 
+    /// Opção "LOD": quando o jogador muda de coluna (ou a opção muda), as seções cujo nível não serve mais
+    /// voltam para a fila; a malha velha fica na tela até a nova chegar.
+    fn review_lod_levels(&mut self) {
+        let on = self.menu.settings.lod;
+        let (pcx, pcz) = ((self.player.pos.x.floor() as i32) >> 4, (self.player.pos.z.floor() as i32) >> 4);
+        if self.lod_seen == Some((on, pcx, pcz)) || (!on && self.lod_levels.is_empty()) {
+            self.lod_seen = Some((on, pcx, pcz));
+            return;
+        }
+        self.lod_seen = Some((on, pcx, pcz));
+        for key in self.vis.keys() {
+            let cur = self.lod_levels.get(key).copied().unwrap_or(0);
+            if lod_level(on, (key.0 - pcx).abs().max((key.2 - pcz).abs()), Some(cur)) != cur {
+                self.world.dirty.insert(*key);
+            }
+        }
+    }
+
+    /// Nível da malha para a seção que vai ser montada agora (e anota).
+    fn take_lod_level(&mut self, key: Key) -> u8 {
+        let on = self.menu.settings.lod;
+        let (pcx, pcz) = ((self.player.pos.x.floor() as i32) >> 4, (self.player.pos.z.floor() as i32) >> 4);
+        let level = lod_level(on, (key.0 - pcx).abs().max((key.2 - pcz).abs()), self.lod_levels.get(&key).copied());
+        if level == 0 {
+            self.lod_levels.remove(&key);
+        } else {
+            self.lod_levels.insert(key, level);
+        }
+        level
+    }
+
     fn schedule_meshes(&mut self) {
+        self.review_lod_levels();
         if self.world.dirty.is_empty() {
             return;
         }
@@ -1546,6 +1611,7 @@ impl Game {
                     }
                 }
                 Some(p) => {
+                    self.lod_levels.remove(&key);
                     let mesh = mesh_section(&p, [key.0 * 16, key.1 * 16, key.2 * 16], &self.table);
                     self.vis.insert(key, mesh.visibility);
                     if let Some(r) = &mut self.renderer {
@@ -1577,10 +1643,12 @@ impl Game {
                     }
                 }
                 Some(p) => {
+                    let level = self.take_lod_level(key);
                     let (tx, table) = (self.mesh_tx.clone(), self.table.clone());
                     self.mesh_in_flight += 1;
                     rayon::spawn(move || {
-                        let mesh = mesh_section(&p, [key.0 * 16, key.1 * 16, key.2 * 16], &table);
+                        let origin = [key.0 * 16, key.1 * 16, key.2 * 16];
+                        let mesh = if level == 0 { mesh_section(&p, origin, &table) } else { mc_world::lod::mesh_section_lod(&p, origin, &table, level) };
                         let _ = tx.send(MeshDone { key, version, mesh });
                     });
                 }
@@ -1635,6 +1703,29 @@ impl Game {
         }
         self.schedule_meshes();
         self.collect_meshes();
+        let s = &self.menu.settings;
+        let pc = ((self.player.pos.x.floor() as i32) >> 4, (self.player.pos.z.floor() as i32) >> 4);
+        self.far.update(&self.world, &self.table, pc, s.lod_distance, s.render_distance.clamp(2, 32), self.renderer.as_mut());
+    }
+
+    /// Opção "Distância LOD": colunas carregadas no círculo da distância de renderização ficam com o terreno de
+    /// perto; o resto é do terreno de longe.
+    fn far_frame(&self) -> Option<mc_render::FarFrame> {
+        if !self.far.active() {
+            return None;
+        }
+        let s = &self.menu.settings;
+        let rd = s.render_distance.clamp(2, 32);
+        let pc = ((self.player.pos.x.floor() as i32) >> 4, (self.player.pos.z.floor() as i32) >> 4);
+        let mut ff = mc_render::FarFrame::new(pc, (s.lod_distance.max(rd) * 16) as f32);
+        for dz in -rd..=rd {
+            for dx in -rd..=rd {
+                if dx * dx + dz * dz <= rd * rd && self.world.columns.contains_key(&(pc.0 + dx, pc.1 + dz)) {
+                    ff.set(pc.0 + dx, pc.1 + dz);
+                }
+            }
+        }
+        Some(ff)
     }
 
     fn print_stats(&mut self) {
@@ -1642,13 +1733,14 @@ impl Game {
             let t = since.elapsed().as_secs_f32();
             if t >= 5.0 {
                 println!(
-                    "[stats] {:.1} ticks/s, {:.0} quadros/s, coberta: {}, colunas: {}, seções por montar: {}, desenhadas: {}, jogador: {:.2} {:.2} {:.2} olhando {:.1} {:.1}",
+                    "[stats] {:.1} ticks/s, {:.0} quadros/s, coberta: {}, colunas: {}, seções por montar: {}, desenhadas: {}, longe: {}, jogador: {:.2} {:.2} {:.2} olhando {:.1} {:.1}",
                     *ticks as f32 / t,
                     *frames as f32 / t,
                     self.occluded,
                     self.world.columns.len(),
                     self.world.dirty.len() + self.mesh_in_flight,
                     self.renderer.as_ref().map_or(0, |r| r.drawn_sections.get()),
+                    self.far.tile_count(),
                     self.player.pos.x,
                     self.player.pos.y,
                     self.player.pos.z,
@@ -1738,6 +1830,7 @@ impl Game {
                 yaw: p.yaw,
                 pitch: p.pitch,
                 render_distance: self.menu.settings.render_distance,
+                lod_far: if self.far.active() { (self.menu.settings.lod_distance * 16) as f32 } else { 0.0 },
                 fancy: self.menu.settings.fancy_graphics,
                 clouds: self.menu.settings.clouds,
                 gamma: self.menu.settings.gamma,
@@ -2008,7 +2101,8 @@ impl Game {
             visible_sections(&sc)
         });
         self.prof.add(8, t);
-        let frame = Frame { cam: &cam, hand: hand.as_ref(), sky: &sky, sky_draws: &atm.sky_draws, weather_draws: &atm.weather_draws, late_draws: &atm.late_draws, models: &models, additive: &self.entities.additive, overlay: &self.entities.overlay, front: front.clone(), particles: &particles, ui: &self.ui, gui_scale, crosshair, gui_models: gui_models.as_ref(), visible: visible.as_ref() };
+        let far = self.far_frame();
+        let frame = Frame { far: far.as_ref(), cam: &cam, hand: hand.as_ref(), sky: &sky, sky_draws: &atm.sky_draws, weather_draws: &atm.weather_draws, late_draws: &atm.late_draws, models: &models, additive: &self.entities.additive, overlay: &self.entities.overlay, front: front.clone(), particles: &particles, ui: &self.ui, gui_scale, crosshair, gui_models: gui_models.as_ref(), visible: visible.as_ref() };
         let t = Instant::now();
         // MINE_RS_PRINT_DIR (testes no modo fora da tela): o arquivo "pedido" com um nome vira <nome>.png lido da GPU.
         if let (Some(dir), Some(r)) = (&self.print_dir, &mut self.renderer) {
@@ -3189,6 +3283,7 @@ impl Game {
         self.entities.players.clear();
         self.clear_server_pack();
         self.reset_world(0);
+        self.far.set_world(None, self.renderer.as_mut());
         self.hud = Hud::default();
         self.inv = Inventory::default();
         self.target = None;
@@ -3671,6 +3766,19 @@ impl Game {
 /// Metadata do bloco colocado pelo `ItemBlock.onItemUse`, só para os blocos sem `onBlockPlaced` próprio:
 /// `getMetadata` devolve o dano nos `ItemMultiTexture`/`ItemCloth`/`ItemColored` e 0 no `ItemBlock` comum;
 /// os troncos (`BlockLog.onBlockPlaced`) pegam o eixo da face clicada.
+/// Opção "LOD": malha cheia até 8 colunas do jogador, células de 2 blocos até 16 e de 4 depois. Com o nível
+/// atual (`cur`), só troca quando a distância passa uma coluna do limite (andar na borda não refaz a malha).
+fn lod_level(on: bool, dist: i32, cur: Option<u8>) -> u8 {
+    if !on {
+        return 0;
+    }
+    let level = |d: i32| if d <= 8 { 0 } else if d <= 16 { 1 } else { 2 };
+    match cur {
+        Some(c) if (level(dist - 1)..=level(dist + 1)).contains(&c) => c,
+        _ => level(dist),
+    }
+}
+
 fn place_meta(id: u16, damage: u16, face: u8) -> Option<u16> {
     Some(match id {
         1 | 3 | 5 | 12 | 19 | 24 | 35 | 95 | 97 | 98 | 159 | 168 | 179 => damage,

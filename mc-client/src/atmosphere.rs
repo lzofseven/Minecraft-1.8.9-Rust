@@ -24,6 +24,8 @@ pub struct FrameIn {
     pub yaw: f32,
     pub pitch: f32,
     pub render_distance: i32,
+    /// Opção "Distância LOD" ligada: fim da neblina do mundo em blocos (0 = a distância de renderização).
+    pub lod_far: f32,
     pub fancy: bool,
     /// Opção de nuvens: 0 desligadas, 1 rápidas, 2 fancy.
     pub clouds: i32,
@@ -243,7 +245,7 @@ impl Atmosphere {
         let (ex, ez) = (i.feet[0] as i32, i.feet[2] as i32);
         let sky = Sky {
             fog_color,
-            fog_world: enc(sky::setup_fog(0, far, &w, fog_medium, &i.fx, ex, ez)),
+            fog_world: enc(sky::setup_fog(0, far.max(i.lod_far), &w, fog_medium, &i.fx, ex, ez)),
             fog_sky: enc(sky::setup_fog(-1, far, &w, fog_medium, &i.fx, ex, ez)),
             lightmap: sky::lightmap(&w, self.flicker, i.gamma, i.fx.night_vision, pt),
         };

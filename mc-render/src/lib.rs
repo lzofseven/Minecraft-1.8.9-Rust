@@ -17,5 +17,5 @@ pub use assets::{block_tile, build_atlas, tile_size_for, AtlasImage, MAX_TILE};
 pub use resources::Jar;
 pub use sections::SectionSet;
 pub use particle_pass::{ParticleBatch, ParticleDraw, ParticleInstance};
-pub use renderer::{aabb_visible, Camera, DrawItem, Frame, GuiModels, HandPass, Renderer, Sky, Tex};
+pub use renderer::{aabb_visible, Camera, DrawItem, FarFrame, Frame, GuiModels, HandPass, Renderer, Sky, Tex};
 pub use skygeo::{weather_draws, CloudFrame, SkyDraw, SkyFrame, SkyTex, SkyVertex, WeatherFrame, WeatherWorld};

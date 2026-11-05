@@ -26,8 +26,17 @@ pub fn build() -> World {
     let mut w = World::new(true);
     // `MINE_RS_TEST_RADIUS=n`: colunas de -n a n (padrão 3); 12 cobre a distância de 10 chunks.
     let biome = env("BIOME").and_then(|v| v.parse::<u8>().ok());
-    let n = env("RADIUS").and_then(|v| v.parse::<i32>().ok()).unwrap_or(3).clamp(1, 16);
+    let n = env("RADIUS").and_then(|v| v.parse::<i32>().ok()).unwrap_or(3).clamp(1, 40);
     let under = env("CAVERNAS").is_some();
+    // MINE_RS_TEST_TERRENO=1: morros, água e árvores (medidas do LOD); a área em volta do jogador continua plana.
+    if env("TERRENO").is_some() {
+        for cx in -n..=n {
+            for cz in -n..=n {
+                w.apply(hills(cx, cz, biome));
+            }
+        }
+        return w;
+    }
     for cx in -n..=n {
         for cz in -n..=n {
             let mut s = Box::new(Section::empty(true));
@@ -66,6 +75,76 @@ pub fn build() -> World {
         }
     }
     w
+}
+
+/// Altura do terreno de `MINE_RS_TEST_TERRENO` (senos somados; plano em y = 64 perto da origem).
+fn hill_height(x: i32, z: i32) -> i32 {
+    let (fx, fz) = (x as f32, z as f32);
+    let h = 14.0 * (fx / 41.0).sin() * (fz / 37.0).cos() + 9.0 * ((fx + fz) / 23.0).sin() + 5.0 * (fx / 11.0 - fz / 13.0).cos() + 18.0 * (fx / 150.0).sin() * (fz / 130.0).sin();
+    let near = ((fx * fx + fz * fz).sqrt() / 48.0).clamp(0.0, 1.0);
+    (64.0 + h * near).round() as i32
+}
+
+fn tree_at(x: i32, z: i32) -> bool {
+    let k = (x.wrapping_mul(73856093) ^ z.wrapping_mul(19349663)) as u32;
+    k % 53 == 0 && x.rem_euclid(5) == 0 && z.rem_euclid(5) == 0 && x * x + z * z > 400
+}
+
+fn hills(cx: i32, cz: i32, biome: Option<u8>) -> ChunkData {
+    let mut secs: Vec<Option<Box<Section>>> = (0..8).map(|_| None).collect();
+    let mut put = |x: i32, y: i32, z: i32, st: u16| {
+        if !(32..128).contains(&y) {
+            return;
+        }
+        let s = secs[(y >> 4) as usize].get_or_insert_with(|| Box::new(Section::empty(true)));
+        s.blocks[Section::index(x, y & 15, z)] = st;
+    };
+    for z in 0..16 {
+        for x in 0..16 {
+            let (wx, wz) = (cx * 16 + x, cz * 16 + z);
+            let h = hill_height(wx, wz);
+            for y in 32..h {
+                let st = if y == h - 1 { if h <= 62 { 12 << 4 } else { 2 << 4 } } else if y >= h - 4 { 3 << 4 } else { 1 << 4 };
+                put(x, y, z, st);
+            }
+            for y in h..62 {
+                put(x, y, z, 9 << 4);
+            }
+            if h > 63 && (wx + wz * 3).rem_euclid(7) == 0 {
+                put(x, h, z, 31 << 4 | 1);
+            }
+        }
+    }
+    // Árvores: tronco de 5 e copa 5x5 (só as que cabem na coluna).
+    for z in 2..14 {
+        for x in 2..14 {
+            let (wx, wz) = (cx * 16 + x, cz * 16 + z);
+            let h = hill_height(wx, wz);
+            if h <= 63 || !tree_at(wx, wz) {
+                continue;
+            }
+            for dy in 3..7 {
+                let r = if dy >= 5 { 1 } else { 2 };
+                for dz in -r..=r {
+                    for dx in -r..=r {
+                        put(x + dx, h + dy, z + dz, 18 << 4);
+                    }
+                }
+            }
+            for dy in 0..5 {
+                put(x, h + dy, z, 17 << 4);
+            }
+        }
+    }
+    let mut mask = 0u16;
+    let mut sections = Vec::new();
+    for (i, s) in secs.into_iter().enumerate() {
+        if let Some(s) = s {
+            mask |= 1 << i;
+            sections.push((i, s));
+        }
+    }
+    ChunkData { x: cx, z: cz, full: true, mask, sections, biomes: biome.map(|b| Box::new([b; 256])) }
 }
 
 /// Colunas de `MINE_RS_TEST_CAVERNAS`: pedra de y = 0 a 59; a seção 3 (y 48 a 63) mantém a grama e a terra de `top`.

@@ -9,6 +9,7 @@ pub mod fluid;
 pub mod gen_shapes;
 pub mod gen_tools;
 pub mod jmath;
+pub mod lod;
 pub mod item_keys;
 pub mod items;
 pub mod math;

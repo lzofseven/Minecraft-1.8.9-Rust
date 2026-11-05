@@ -24,6 +24,10 @@ struct Globals {
     screen: vec4<f32>,
     // EntityRenderer.updateLightmap: índice = céu * 16 + bloco (rgb em gama)
     lightmap: array<vec4<f32>, 256>,
+    // Terreno de longe (opção "Distância LOD"): xy = coluna do jogador.
+    lod: vec4<f32>,
+    // Colunas desenhadas pelo terreno de perto, numa grade 65 x 65 em volta de `lod.xy` (bit z * 65 + x).
+    near_mask: array<vec4<u32>, 34>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -135,6 +139,25 @@ fn fs_cutout_block(i: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(c.rgb, 1.0);
+}
+
+// Terreno de longe: some onde o terreno de perto desenha a coluna (sem faixa dupla nem buraco na borda).
+fn near_drawn(p: vec3<f32>) -> bool {
+    let c = vec2<i32>(floor(p.xz / 16.0)) - vec2<i32>(g.lod.xy) + vec2<i32>(32, 32);
+    if (c.x < 0 || c.y < 0 || c.x > 64 || c.y > 64) {
+        return false;
+    }
+    let i = u32(c.y * 65 + c.x);
+    let w = g.near_mask[i / 128u][(i / 32u) % 4u];
+    return ((w >> (i % 32u)) & 1u) != 0u;
+}
+
+@fragment
+fn fs_far(i: VsOut) -> @location(0) vec4<f32> {
+    if (near_drawn(i.wpos)) {
+        discard;
+    }
+    return vec4<f32>(shade(i).rgb, 1.0);
 }
 
 // Partículas: mistura com recorte em 1/255 (`alphaFunc(GREATER, 0.003921569)`).
@@ -339,6 +362,49 @@ pub struct Frame<'a> {
     pub gui_models: Option<&'a GuiModels>,
     /// Seções que a câmera alcança (`culling`); `None` desenha todas que passam no frustum e no alcance.
     pub visible: Option<&'a crate::SectionSet>,
+    /// Opção "Distância LOD": com ela, o terreno de perto desenha as colunas da máscara e o de longe o resto.
+    pub far: Option<&'a FarFrame>,
+}
+
+/// Terreno de longe no quadro.
+#[derive(Clone, Copy)]
+pub struct FarFrame {
+    /// Coluna do jogador (centro da máscara).
+    pub center: (i32, i32),
+    /// Colunas que o terreno de perto desenha: bit `z * 65 + x` da grade 65 x 65 que começa em `center - 32`.
+    pub mask: [u32; 136],
+    /// Alcance do terreno de longe, em blocos.
+    pub distance: f32,
+}
+
+impl FarFrame {
+    pub fn new(center: (i32, i32), distance: f32) -> Self {
+        Self { center, mask: [0; 136], distance }
+    }
+
+    pub fn set(&mut self, cx: i32, cz: i32) {
+        let (x, z) = (cx - self.center.0 + 32, cz - self.center.1 + 32);
+        if (0..65).contains(&x) && (0..65).contains(&z) {
+            let i = (z * 65 + x) as usize;
+            self.mask[i / 32] |= 1 << (i % 32);
+        }
+    }
+
+    pub fn contains(&self, cx: i32, cz: i32) -> bool {
+        let (x, z) = (cx - self.center.0 + 32, cz - self.center.1 + 32);
+        if !(0..65).contains(&x) || !(0..65).contains(&z) {
+            return false;
+        }
+        let i = (z * 65 + x) as usize;
+        self.mask[i / 32] & (1 << (i % 32)) != 0
+    }
+}
+
+/// Bloco do terreno de longe na GPU.
+struct FarTile {
+    part: Part,
+    min: Vec3,
+    max: Vec3,
 }
 
 /// Geometria 3D desenhada no meio da GUI: entre os índices `0..at` e `at..` do `UiBatch`, com a própria
@@ -360,6 +426,8 @@ struct Globals {
     camera: [f32; 4],
     screen: [f32; 4],
     lightmap: [[f32; 4]; 256],
+    lod: [f32; 4],
+    near_mask: [[u32; 4]; 34],
 }
 
 /// Uniforme por desenho do céu (um slot de 256 bytes cada).
@@ -577,6 +645,8 @@ pub struct Renderer {
     sky_vb: FrameBuf,
     sky_lote: Vec<SkyVertex>,
     sections: HashMap<(i32, i32, i32), SectionGpu>,
+    far_tiles: HashMap<(i32, i32), FarTile>,
+    far_blocks: wgpu::RenderPipeline,
     /// Vértices e índices de todas as seções, e os argumentos dos desenhos indiretos do quadro.
     sec_vb: crate::arena::Pool,
     sec_ib: crate::arena::Pool,
@@ -856,6 +926,7 @@ impl Renderer {
         let always = wgpu::CompareFunction::Always;
         let cutout = pipeline("vs_main", "fs_cutout", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let solid_blocks = terrain("fs_solid_block", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
+        let far_blocks = terrain("fs_far", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let cutout_blocks = terrain("fs_cutout_block", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let cutout_nomip_blocks = terrain("fs_cutout_block_nomip", &[vertex_layout.clone()], None, depth_state(true, wgpu::CompareFunction::LessEqual));
         let translucent_blocks = terrain("fs_translucent", &[vertex_layout.clone()], Some(wgpu::BlendState::ALPHA_BLENDING), depth_state(false, wgpu::CompareFunction::LessEqual));
@@ -1028,6 +1099,8 @@ impl Renderer {
             next_custom: 1,
             crosshair,
             sections: HashMap::new(),
+            far_tiles: HashMap::new(),
+            far_blocks,
             sec_vb,
             sec_ib,
             indirect,
@@ -1235,9 +1308,13 @@ impl Renderer {
 
     /// Projeção x visão da câmera.
     fn view_proj(&self, cam: &Camera) -> Mat4 {
+        self.view_proj_to(cam, cam.view_distance)
+    }
+
+    fn view_proj_to(&self, cam: &Camera, distance: f32) -> Mat4 {
         let aspect = self.config.width as f32 / self.config.height as f32;
         // farPlaneDistance * sqrt(2), como o EntityRenderer.
-        let far = cam.view_distance * std::f32::consts::SQRT_2;
+        let far = distance * std::f32::consts::SQRT_2;
         let proj = Mat4::perspective_rh(cam.fov_deg.to_radians(), aspect, 0.05, far);
         let view = cam.view.unwrap_or_else(|| Mat4::look_to_rh(cam.eye, cam.forward(), Vec3::Y));
         proj * view
@@ -1308,6 +1385,41 @@ impl Renderer {
 
     pub fn section_count(&self) -> usize {
         self.sections.len()
+    }
+
+    /// Terreno de longe do bloco `key` (substitui o anterior; geometria vazia só remove).
+    pub fn upload_far(&mut self, key: (i32, i32), g: &Geometry) {
+        self.remove_far(key);
+        if g.is_empty() {
+            return;
+        }
+        let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for v in &g.vertices {
+            let p = Vec3::from(v.pos);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        if let Some(part) = self.put_part(g) {
+            self.far_tiles.insert(key, FarTile { part, min, max });
+        }
+    }
+
+    pub fn remove_far(&mut self, key: (i32, i32)) {
+        if let Some(t) = self.far_tiles.remove(&key) {
+            self.sec_vb.release(t.part.v);
+            self.sec_ib.release(t.part.i);
+        }
+    }
+
+    pub fn clear_far(&mut self) {
+        let keys: Vec<_> = self.far_tiles.keys().copied().collect();
+        for k in keys {
+            self.remove_far(k);
+        }
+    }
+
+    pub fn far_count(&self) -> usize {
+        self.far_tiles.len()
     }
 
     fn gui_bind_group(&self, t: Tex) -> Option<&wgpu::BindGroup> {
@@ -1418,7 +1530,10 @@ impl Renderer {
     pub fn render(&mut self, f: &Frame) -> Result<(), String> {
         let cam = f.cam;
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let vp = self.view_proj(cam);
+        let vp = match f.far {
+            Some(ff) => self.view_proj_to(cam, cam.view_distance.max(ff.distance + 64.0)),
+            None => self.view_proj(cam),
+        };
         let sky = f.sky;
         let mut lightmap = [[0f32; 4]; 256];
         for (o, c) in lightmap.iter_mut().zip(sky.lightmap.iter()) {
@@ -1431,6 +1546,8 @@ impl Renderer {
             camera: [cam.eye.x, cam.eye.y, cam.eye.z, 0.0],
             screen: [self.config.width as f32, self.config.height as f32, f.gui_scale, 0.0],
             lightmap,
+            lod: f.far.map_or([0.0; 4], |ff| [ff.center.0 as f32, ff.center.1 as f32, 1.0, 0.0]),
+            near_mask: f.far.map_or([[0; 4]; 34], |ff| bytemuck::cast(ff.mask)),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         if let Some(h) = f.hand {
@@ -1540,7 +1657,11 @@ impl Renderer {
             .filter(|(k, _)| {
                 let c = center(k);
                 let d = c - cam.eye;
-                d.x * d.x + d.z * d.z <= max_d2 && f.visible.map_or(true, |v| v.contains(*k)) && aabb_visible(&planes, c - Vec3::splat(8.0), c + Vec3::splat(8.0))
+                let near = match f.far {
+                    Some(ff) => ff.contains(k.0, k.2),
+                    None => d.x * d.x + d.z * d.z <= max_d2,
+                };
+                near && f.visible.map_or(true, |v| v.contains(*k)) && aabb_visible(&planes, c - Vec3::splat(8.0), c + Vec3::splat(8.0))
             })
             .collect();
         self.drawn_sections.set(visible.len());
@@ -1558,6 +1679,26 @@ impl Renderer {
             }
             *layer = (first, args.len() as u32 - first);
         }
+        // Terreno de longe: depois das camadas de perto, de frente para trás.
+        let far_layer = {
+            let first = args.len() as u32;
+            if let Some(ff) = f.far {
+                let reach = (ff.distance + 96.0).powi(2);
+                let eye = cam.eye;
+                let mut tiles: Vec<(f32, &FarTile)> = self
+                    .far_tiles
+                    .values()
+                    .filter_map(|t| {
+                        let c = (t.min + t.max) * 0.5;
+                        let d = Vec3::new(c.x - eye.x, 0.0, c.z - eye.z).length_squared();
+                        (d <= reach && aabb_visible(&planes, t.min, t.max)).then_some((d, t))
+                    })
+                    .collect();
+                tiles.sort_by(|a, b| a.0.total_cmp(&b.0));
+                args.extend(tiles.iter().map(|(_, t)| draw_args(&t.part)));
+            }
+            (first, args.len() as u32 - first)
+        };
         self.indirect.upload(&self.device, &self.queue, bytemuck::cast_slice(&args));
 
         // Geometria do quadro (entidades, textos, mão e GUI) num lote só: um upload por buffer, antes do desenho.
@@ -1596,7 +1737,7 @@ impl Renderer {
             });
             // Uma camada do terreno inteira: os buffers grandes e um desenho indireto (ou um draw_indexed por seção).
             let terrain = |pass: &mut wgpu::RenderPass, layer: usize| {
-                let (first, count) = layers[layer];
+                let (first, count) = if layer < 4 { layers[layer] } else { far_layer };
                 if count == 0 {
                     return;
                 }
@@ -1634,6 +1775,10 @@ impl Renderer {
             terrain(&mut pass, 1);
             pass.set_pipeline(&self.cutout_nomip_blocks);
             terrain(&mut pass, 2);
+            if far_layer.1 > 0 {
+                pass.set_pipeline(&self.far_blocks);
+                terrain(&mut pass, 4);
+            }
             pass.set_pipeline(&self.cutout);
             for (tex, translucent, g) in &dynamic {
                 if !translucent {

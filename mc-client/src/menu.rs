@@ -634,7 +634,7 @@ impl Menu {
             Screen::Video => {
                 b.push(Button::new(200, w / 2 - 100, h - 27, tr("gui.done")));
                 // GuiOptionsRowList: pares nas colunas w/2-155 e w/2+5.
-                const VIDEO: [Opt; 16] = [
+                const VIDEO: [Opt; 18] = [
                     Opt::Graphics,
                     Opt::RenderDistance,
                     Opt::AmbientOcclusion,
@@ -651,6 +651,8 @@ impl Menu {
                     Opt::BlockAlternatives,
                     Opt::UseVbo,
                     Opt::EntityShadows,
+                    Opt::Lod,
+                    Opt::LodDistance,
                 ];
                 let scroll = if self.inited.as_ref().is_some_and(|(sc, _, _)| *sc == Screen::Video) { self.list.scroll } else { 0.0 };
                 self.list = SlotList::new(w, h, 32, h - 32, 25);
