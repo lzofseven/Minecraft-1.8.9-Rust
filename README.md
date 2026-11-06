@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" alt="Logo do Minecraft 1.8.9 Rust: uma mesa de trabalho em voxel" width="160">
+
 # Minecraft 1.8.9 Rust
 
 **Um cliente do Minecraft Java 1.8.9 reescrito do zero em Rust.**
