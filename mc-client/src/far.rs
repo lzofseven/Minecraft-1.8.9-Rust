@@ -145,7 +145,7 @@ fn write_region(path: &Path, r: Col, cols: &[(Col, Arc<FarColumn>)]) -> std::io:
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
+    mc_world::replace::replace_file(&tmp, path)
 }
 
 impl Far {
@@ -431,7 +431,12 @@ mod tests {
         write_region(&path, r, &cols).unwrap();
         let mut back = read_region(&path, r);
         back.sort_by_key(|(c, _)| *c);
-        assert_eq!(back, vec![((-32, 64), a), ((-1, 95), b)]);
+        assert_eq!(back, vec![((-32, 64), a.clone()), ((-1, 95), b)]);
+        // Segunda gravação por cima do mesmo arquivo (no Windows um rename simples falha).
+        a.cells[3].n = 2;
+        let cols2 = vec![((-32, 64), Arc::new(a.clone()))];
+        write_region(&path, r, &cols2).unwrap();
+        assert_eq!(read_region(&path, r), vec![((-32, 64), a)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

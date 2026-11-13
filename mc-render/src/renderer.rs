@@ -2053,7 +2053,7 @@ impl Renderer {
             // Grava ao lado e renomeia: quem espera o PNG nunca vê o arquivo pela metade.
             let tmp = path.with_extension("parcial");
             let r = image::save_buffer_with_format(&tmp, &rgba, w, h, image::ColorType::Rgba8, image::ImageFormat::Png).map_err(|e| e.to_string());
-            if let Err(e) = r.and_then(|_| std::fs::rename(&tmp, &path).map_err(|e| e.to_string())) {
+            if let Err(e) = r.and_then(|_| mc_world::replace::replace_file(&tmp, &path).map_err(|e| e.to_string())) {
                 eprintln!("print {}: {e}", path.display());
             }
         }

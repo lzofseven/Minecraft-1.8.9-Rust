@@ -65,7 +65,7 @@ fn download_checked(url: &str, sha1: &str, dst: &Path, limit: u64) -> Result<(),
     }
     let tmp = dst.with_extension("tmp");
     std::fs::write(&tmp, &b)?;
-    std::fs::rename(tmp, dst)?;
+    mc_world::replace::replace_file(&tmp, dst)?;
     Ok(())
 }
 

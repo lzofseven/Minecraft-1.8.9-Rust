@@ -87,6 +87,10 @@ impl Account {
 
     /// Grava `conta.json` só para o dono (tem o token de renovação).
     pub fn save(&self) -> std::io::Result<()> {
+        self.write_at(&path())
+    }
+
+    fn write_at(&self, p: &std::path::Path) -> std::io::Result<()> {
         let v = match self {
             Account::Offline(name) => json!({ "tipo": "offline", "name": name }),
             Account::Microsoft { name, uuid, access_token, refresh_token, client_id, expires_at } => json!({
@@ -94,7 +98,6 @@ impl Account {
                 "refresh_token": refresh_token, "client_id": client_id, "expires_at": expires_at,
             }),
         };
-        let p = path();
         if let Some(d) = p.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -105,7 +108,7 @@ impl Account {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
         }
-        std::fs::rename(tmp, p)
+        mc_world::replace::replace_file(&tmp, p)
     }
 
     /// A conta Microsoft com o token válido por mais 5 minutos (renova com o refresh token se preciso).
@@ -226,5 +229,22 @@ mod tests {
         assert!(!valid_name("ab"));
         assert!(!valid_name("nome com espaco"));
         assert!(!valid_name("nomecomdezesseteletras"));
+    }
+
+    #[test]
+    fn regrava_conta_por_cima() {
+        let dir = std::env::temp_dir().join(format!("mine-rs-conta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("conta.json");
+        Account::Offline("Steve".into()).write_at(&p).unwrap();
+        Account::Offline("Alex".into()).write_at(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(v["name"], "Alex");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
