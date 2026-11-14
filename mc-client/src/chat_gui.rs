@@ -1149,7 +1149,6 @@ mod tests {
     #[test]
     fn hover_show_text_splits_on_newlines() {
         let mut u = ui();
-        crate::lang::install("pt_BR", None);
         let lang = Lang::default();
         let ctx = HoverCtx { advanced_tooltips: false, lang: &lang, inventory_key: "E".into() };
         let s = comp(r#"{"text":"x","hoverEvent":{"action":"show_text","value":{"text":"um\ndois","color":"red"}}}"#).spans().remove(0);
@@ -1196,7 +1195,6 @@ mod tests {
     #[test]
     fn hover_show_achievement() {
         let mut u = ui();
-        crate::lang::install("pt_BR", None);
         let lang = Lang::default();
         let ctx = HoverCtx { advanced_tooltips: false, lang: &lang, inventory_key: "E".into() };
         let ev = |id: &str| {

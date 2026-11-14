@@ -3590,9 +3590,9 @@ impl Game {
     fn on_resource_pack(&mut self, url: String, hash: String) {
         use crate::server_pack::Status;
         if let Some(name) = url.strip_prefix("level://") {
-            // Pacote de um mundo local: só existe em ~/.minecraft/saves/<nome>.
-            let file = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".minecraft/saves").join(name);
-            if !name.contains("..") && !name.contains('/') && file.is_file() {
+            // Pacote de um mundo local: `<.minecraft>/saves/<nome>` (no Windows, `%APPDATA%\.minecraft`).
+            let file = local_pack_path(name).filter(|f| f.is_file());
+            if let Some(file) = file {
                 self.send_pack_status(&hash, Status::Accepted);
                 self.server_pack = Some(file);
                 self.reload_resources();
@@ -4349,6 +4349,15 @@ fn inventory_status(riding_horse: bool) -> Option<i32> {
     (!riding_horse).then_some(serverbound::STATUS_OPEN_INVENTORY_ACHIEVEMENT)
 }
 
+/// Arquivo de um pacote `level://<nome>`: `<.minecraft>/saves/<nome>`.
+/// No Windows a pasta do launcher é `%APPDATA%\.minecraft`, sem usar `HOME`.
+fn local_pack_path(name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return None;
+    }
+    Some(mc_render::resources::minecraft_dir()?.join("saves").join(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4362,6 +4371,18 @@ mod tests {
     #[test]
     fn riding_a_horse_sends_no_client_status() {
         assert_eq!(inventory_status(true), None);
+    }
+
+    #[test]
+    fn level_pack_nao_sai_da_pasta_de_saves() {
+        assert!(local_pack_path("../x").is_none());
+        assert!(local_pack_path("a/b").is_none());
+        assert!(local_pack_path("a\\b").is_none());
+        assert!(local_pack_path("").is_none());
+        if let Some(p) = local_pack_path("mundo") {
+            assert_eq!(p.file_name().unwrap(), "mundo");
+            assert_eq!(p.parent().unwrap().file_name().unwrap(), "saves");
+        }
     }
 }
 

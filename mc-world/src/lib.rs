@@ -15,6 +15,7 @@ pub mod items;
 pub mod math;
 pub mod mesh;
 pub mod model;
+pub mod replace;
 pub mod states;
 pub mod visgraph;
 

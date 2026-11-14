@@ -514,9 +514,22 @@ mod tests {
         assert_eq!(c.spans()[0].style.click.as_ref().unwrap().action, ClickAction::SuggestCommand);
     }
 
+    /// Padrões mínimos das chaves que o teste formata. `install` ainda cobre com o `.lang`
+    /// do jar, se ele existir; sem o jar, esta base evita falhar um clone limpo.
+    fn install_test_lang() {
+        crate::lang::install(
+            "pt_BR",
+            Some(
+                "chat.type.text=<%s> %s\n\
+                 multiplayer.player.joined=%s entrou no jogo\n\
+                 commands.generic.notFound=Comando desconhecido.\n",
+            ),
+        );
+    }
+
     #[test]
     fn translate_with_args() {
-        crate::lang::install("pt_BR", None);
+        install_test_lang();
         let j = r#"{"translate":"chat.type.text","with":["Lohan","oi"]}"#;
         assert_eq!(to_plain(j), "<Lohan> oi");
         // Chaves do .lang que antes estavam numa lista fixa, e chave desconhecida crua.
@@ -552,7 +565,7 @@ mod tests {
 
     #[test]
     fn translation_args_inherit_the_translation_style() {
-        crate::lang::install("pt_BR", None);
+        install_test_lang();
         let j = r#"{"translate":"chat.type.text","color":"yellow","with":[{"text":"Lohan","bold":true},"oi"]}"#;
         let spans = comp(j).spans();
         // "<" + nome + "> " + "oi"

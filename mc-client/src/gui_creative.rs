@@ -421,9 +421,12 @@ fn handle_click(inv: &mut Inventory, slot: Option<usize>, slot_number: i32, butt
                 send_slot(inv, s.as_ref(), 36 + i);
             }
         } else if let Some(s) = slot {
-            if s >= 45 {
-                let it = inv.player[36 + s - 45].clone();
-                send_slot(inv, it.as_ref(), s - 54 + 9 + 36);
+            // Slots 45–53 da tela criativa são a hotbar, que no inventário do jogador é 36–44.
+            // A conta tem de ser feita nesta ordem: `s - 54 + 9 + 36` estoura em `usize` (45 < 54).
+            if (45..54).contains(&s) {
+                let player_slot = 36 + (s - 45);
+                let it = inv.player.get(player_slot).cloned().flatten();
+                send_slot(inv, it.as_ref(), player_slot);
             }
         }
     }

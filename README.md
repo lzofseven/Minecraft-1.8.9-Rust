@@ -104,7 +104,7 @@ O cliente é testado no **Linux**; no Windows, use o [instalador](#windows). mac
 
 ### 1. Dependências
 
-Precisa de uma placa de vídeo com **Vulkan** e do Rust estável.
+Precisa de uma placa de vídeo com **Vulkan** e do **Rust 1.88** ou mais novo (é a versão mínima das crates do `Cargo.lock`).
 
 ```bash
 # Debian / Ubuntu
