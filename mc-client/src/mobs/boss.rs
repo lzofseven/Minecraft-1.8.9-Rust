@@ -106,8 +106,7 @@ pub fn wither(e: &Entity, pos: Vec3, t: f32, anim: &Anim, body: f32, death: f32,
     if health <= 150.0 && !e.invisible() {
         if let Some(armor) = cx.textures.jar(cx.r, cx.jar, "entity/wither/wither_armor") {
             let mut ar = Rig::new(&g::WITHER_ARMOR);
-            ar.rot = rig.rot.clone();
-            ar.pivot = rig.pivot.clone();
+            ar.copy_pose(&rig);
             let mut tmp = Geometry::default();
             let mut sink = Sink { geo: &mut tmp, tex: ar.tex(), tint: [0.5; 3], alpha: 255, light: FULL_LIGHT, lights: WORLD_LIGHTS };
             ar.emit(&mut sink, &m, &roots);

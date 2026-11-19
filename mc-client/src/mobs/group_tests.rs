@@ -450,3 +450,22 @@ fn horse_head_lean_and_mouth_ticks() {
     assert_eq!(s.horse_lean, 0.0);
     assert!(s.horse_rear > 0.0);
 }
+
+#[test]
+fn sheep_wool_follows_body_by_part_name() {
+    // SHEEP_BODY lista as pernas primeiro e SHEEP_WOOL a cabeça: a cópia pela posição embaralhava a lã.
+    let mut body = Rig::new(&g::SHEEP_BODY);
+    let h = body.i("head");
+    body.rot[h].x = 0.7;
+    body.pivot[h].y = 9.0;
+    let l = body.i("leg3");
+    body.rot[l].x = -0.4;
+    let mut wool = Rig::new(&g::SHEEP_WOOL);
+    wool.copy_pose(&body);
+    let wh = wool.i("head");
+    assert_eq!((wool.rot[wh].x, wool.pivot[wh].y), (0.7, 9.0));
+    for name in ["body", "leg1", "leg2", "leg3", "leg4"] {
+        assert_eq!(wool.pivot[wool.i(name)], body.pivot[body.i(name)], "{name}");
+        assert_eq!(wool.rot[wool.i(name)], body.rot[body.i(name)], "{name}");
+    }
+}

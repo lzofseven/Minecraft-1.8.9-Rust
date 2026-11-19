@@ -25,4 +25,6 @@ rayon.workspace = true
 flate2.workspace = true
 rodio.workspace = true
 ab_glyph = "0.2.32"
+lzma-rs = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 zip.workspace = true

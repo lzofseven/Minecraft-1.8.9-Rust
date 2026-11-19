@@ -55,6 +55,18 @@ impl Rig {
         self.model.parts.iter().position(|p| p.name == name).unwrap_or_else(|| panic!("parte {name} inexistente"))
     }
 
+    /// `ModelBase.setModelAttributes` entre modelos de camada (lã, sela, armadura): copia pivô e rotação das
+    /// partes de mesmo nome. Os modelos gerados não listam as partes na mesma ordem (a lã da ovelha começa
+    /// pela cabeça e o corpo pelas pernas), então a cópia não pode ser pela posição.
+    pub fn copy_pose(&mut self, from: &Rig) {
+        for (i, part) in self.model.parts.iter().enumerate() {
+            if let Some(j) = from.model.parts.iter().position(|p| p.name == part.name) {
+                self.pivot[i] = from.pivot[j];
+                self.rot[i] = from.rot[j];
+            }
+        }
+    }
+
     pub fn tex(&self) -> (f32, f32) {
         (self.model.tex.0 as f32, self.model.tex.1 as f32)
     }

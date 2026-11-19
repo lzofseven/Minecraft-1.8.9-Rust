@@ -77,6 +77,8 @@ mod rain;
 mod res;
 mod server_pack;
 mod settings;
+mod singleplayer;
+mod worlds;
 mod skins;
 mod sound;
 mod tab_list;

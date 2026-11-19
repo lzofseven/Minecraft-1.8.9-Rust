@@ -172,7 +172,17 @@ impl Lang {
             _ => None,
         };
         let with_variant = variant.and_then(|v| self.get(&format!("{base}.{v}.name")));
-        with_variant.or_else(|| self.get(&format!("{base}.name"))).map(str::to_string)
+        let name = with_variant.or_else(|| self.get(&format!("{base}.name"))).map(str::to_string);
+        if base == "item.monsterPlacer" {
+            // ItemMonsterPlacer.getItemStackDisplayName: "Invocar" + o nome do mob do dano (EntityList.getStringFromID).
+            let mut s = name?.trim().to_string();
+            if let Some((ent, _)) = crate::gen_chat_tables::ENTITY_IDS.iter().find(|(_, i)| *i as i16 == damage) {
+                let key = format!("entity.{ent}.name");
+                s = format!("{s} {}", self.get(&key).unwrap_or(&key));
+            }
+            return Some(s);
+        }
+        name
     }
 }
 
@@ -189,5 +199,7 @@ mod tests {
         assert_eq!(l.item_name(159, 14).as_deref(), Some("Argila Tingida de Vermelho"));
         assert_eq!(l.item_name(58, 0).as_deref(), Some("Bancada de Trabalho"));
         assert_eq!(l.item_name(351, 0).as_deref(), Some("Bolsa de Tinta"));
+        assert_eq!(l.item_name(383, 50).as_deref(), Some("Invocar Creeper"));
+        assert_eq!(l.item_name(383, 62).as_deref(), Some("Invocar Cubo de Magma"));
     }
 }

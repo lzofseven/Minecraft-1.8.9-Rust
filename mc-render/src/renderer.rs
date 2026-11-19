@@ -1590,7 +1590,10 @@ impl Renderer {
         }
 
         // Desenhos do céu: um slot de uniforme e um vértice-buffer por desenho.
-        let rot_view = Mat4::look_to_rh(Vec3::ZERO, cam.forward(), Vec3::Y);
+        // A rotação da visão completa, como a matriz do OpenGL no `renderSky`/`renderClouds`: balanço, dano e a
+        // terceira pessoa (o F5 de frente gira 180°). Com só o yaw/pitch do jogador, o céu e as nuvens viravam
+        // junto com o jogador e não com a câmera. A translação fica de fora: a geometria vem relativa ao olho.
+        let rot_view = cam.view.map_or_else(|| Mat4::look_to_rh(Vec3::ZERO, cam.forward(), Vec3::Y), |v| Mat4::from_mat3(glam::Mat3::from_mat4(v)));
         let all: Vec<(u8, &SkyDraw)> = f
             .sky_draws
             .iter()

@@ -18,7 +18,8 @@ use winit::keyboard::KeyCode;
 
 use crate::chat;
 use crate::gui::{self, centered, string, Button, Kind, SlotList, TextField};
-use crate::lang::tr;
+use crate::lang::{tr, trf};
+use crate::worlds::{Flat, Mode, NewWorld, WorldEntry, FLAT_PRESETS, WORLD_TYPES};
 use crate::pack_screen::{Click, PackScreen};
 use crate::settings::{self, Opt, Settings, MODEL_PARTS};
 
@@ -34,6 +35,22 @@ pub enum Screen {
     /// `GuiYesNo` de excluir o servidor `i`.
     ConfirmDelete(usize),
     Connecting(String),
+    /// Um jogador: o servidor local subindo (mensagem em `Menu.working.1`).
+    LocalWorld,
+    /// `GuiSelectWorld`.
+    WorldList,
+    /// `GuiCreateWorld` (as escolhas ficam em `Menu.create`).
+    CreateWorld,
+    /// `GuiRenameWorld` do mundo `i` da lista.
+    RenameWorld(usize),
+    /// `GuiYesNo` de excluir o mundo `i`.
+    ConfirmDeleteWorld(usize),
+    /// `GuiCreateFlatWorld` (camadas em `Menu.flat`).
+    CustomizeFlat,
+    /// `GuiFlatPresets`.
+    FlatPresets,
+    /// No lugar do `GuiShareToLan` (só um jogador): só a opção de permitir comandos.
+    Cheats,
     /// `GuiDownloadTerrain`: do S01 (ou S07 de outra dimensão) até o primeiro S08.
     DownloadTerrain,
     /// Conta: login Microsoft ou um nick offline (sem launcher, o jogo pede na primeira vez).
@@ -66,6 +83,14 @@ pub enum Screen {
 
 pub enum Action {
     Join(String),
+    /// Um jogador: abre o mundo da pasta.
+    PlayWorld(String),
+    /// Um jogador: cria o mundo na pasta e entra nele.
+    CreateWorld(String, NewWorld),
+    /// Um jogador: liga ou desliga os comandos do mundo aberto e volta ao jogo.
+    SetCheats(bool),
+    /// Cancelou a preparação do mundo local.
+    CancelSingleplayer,
     Resume,
     Disconnect,
     Quit,
@@ -142,6 +167,22 @@ pub struct Menu {
     pub packs: Option<PackScreen>,
     /// `GuiScreenWorking`: (título, mensagem, progresso %).
     pub working: (String, String, i32),
+    /// A sessão atual (ou a última) é o modo Um jogador: "Salvar e sair" e a volta vai ao menu principal.
+    pub local: bool,
+    /// Comandos ligados no mundo aberto (um jogador) e a escolha na tela de cheats.
+    pub local_cheats: bool,
+    cheats_draft: bool,
+    /// Mundos da `GuiSelectWorld`.
+    pub worlds: Vec<WorldEntry>,
+    /// Escolhas do `GuiCreateWorld`.
+    create: CreateDraft,
+    /// Superplano sendo editado no `GuiCreateFlatWorld`.
+    flat: Flat,
+    /// Texto do campo do `GuiFlatPresets`.
+    preset_text: String,
+    /// Ícones (vaga no atlas; `None` sem ícone) e nomes dos itens das telas do superplano, preenchidos pelo jogo.
+    pub item_icons: std::collections::HashMap<(i16, i16), Option<u32>>,
+    pub item_names: std::collections::HashMap<(i16, i16), String>,
     /// Jogador local morto (`thePlayer.getHealth() <= 0`): `displayGuiScreen(null)` vira `GuiGameOver`.
     pub dead: bool,
     /// `WorldInfo.isHardcoreModeEnabled` e `EntityPlayer.getScore`, para a tela de morte.
@@ -318,6 +359,15 @@ impl Menu {
             language_changed: false,
             packs: None,
             working: (String::new(), String::new(), 0),
+            local: false,
+            local_cheats: false,
+            cheats_draft: false,
+            worlds: Vec::new(),
+            create: CreateDraft::new(),
+            flat: Flat::parse(crate::worlds::DEFAULT_FLAT),
+            preset_text: String::new(),
+            item_icons: Default::default(),
+            item_names: Default::default(),
             dead: false,
             hardcore: false,
             score: 0,
@@ -359,6 +409,11 @@ impl Menu {
     }
 
     /// Pinga todos os servidores em segundo plano.
+    /// Uma opção mudou fora da tela (F11): os botões são refeitos com o valor novo.
+    pub fn refresh_options(&mut self) {
+        self.inited = None;
+    }
+
     pub fn refresh(&mut self) {
         for (i, s) in self.servers.iter_mut().enumerate() {
             s.status = None;
@@ -419,6 +474,7 @@ impl Menu {
 
     /// Recarga de recursos: o atlas da GUI foi refeito, então favicons e ícones de pacote voltam à fila.
     pub fn reset_icons(&mut self) {
+        self.item_icons.clear();
         for s in &mut self.servers {
             s.icon_slot = None;
             s.icon_png = s.icon_b64.as_deref().and_then(b64);
@@ -454,6 +510,7 @@ impl Menu {
         self.stack.clear();
         match &s {
             Screen::ServerList | Screen::Connecting(_) => self.stack.push(Screen::MainMenu),
+            Screen::Disconnected(..) if self.local => self.stack.push(Screen::MainMenu),
             Screen::Disconnected(..) => self.stack.extend([Screen::MainMenu, Screen::ServerList]),
             _ => {}
         }
@@ -511,9 +568,9 @@ impl Menu {
         match self.screen.clone() {
             Screen::None => {}
             Screen::MainMenu => {
-                // GuiMainMenu.initGui + addSingleplayerMultiplayerButtons (sem mundo local: desativado).
+                // GuiMainMenu.initGui + addSingleplayerMultiplayerButtons (um jogador: servidor oficial local).
                 let j = h / 4 + 48;
-                b.push(Button::new(1, w / 2 - 100, j, tr("menu.singleplayer")).disabled());
+                b.push(Button::new(1, w / 2 - 100, j, tr("menu.singleplayer")));
                 b.push(Button::new(2, w / 2 - 100, j + 24, tr("menu.multiplayer")));
                 // No lugar do Realms (desativado na 1.8.9 sem conta): a conta do jogador.
                 b.push(Button::new(14, w / 2 - 100, j + 48, "Conta"));
@@ -588,7 +645,7 @@ impl Menu {
                 b.push(Button::sized(0, w / 2 - 155, h / 6 + 96, 150, 20, tr("selectServer.deleteButton")));
                 b.push(Button::sized(1, w / 2 - 155 + 160, h / 6 + 96, 150, 20, tr("gui.cancel")));
             }
-            Screen::Connecting(_) => {
+            Screen::Connecting(_) | Screen::LocalWorld => {
                 b.push(Button::new(0, w / 2 - 100, h / 4 + 120 + 12, tr("gui.cancel")));
             }
             Screen::Disconnected(_, reason) => {
@@ -599,10 +656,14 @@ impl Menu {
             Screen::Pause => {
                 // GuiIngameMenu (1.8.9 sem Forge), i = -16.
                 let i = -16;
-                b.push(Button::new(1, w / 2 - 100, h / 4 + 120 + i, tr("menu.disconnect")));
+                let quit = if self.local { "menu.returnToMenu" } else { "menu.disconnect" };
+                b.push(Button::new(1, w / 2 - 100, h / 4 + 120 + i, tr(quit)));
                 b.push(Button::new(4, w / 2 - 100, h / 4 + 24 + i, tr("menu.returnToGame")));
                 b.push(Button::sized(0, w / 2 - 100, h / 4 + 96 + i, 98, 20, tr("menu.options")));
-                b.push(Button::sized(7, w / 2 + 2, h / 4 + 96 + i, 98, 20, tr("menu.shareToLan")).disabled());
+                // "Abrir para LAN" vira a tela de cheats no mundo local (sem LAN: o servidor só ouve 127.0.0.1).
+                let mut lan = Button::sized(7, w / 2 + 2, h / 4 + 96 + i, 98, 20, if self.local { "Ativar cheats".to_string() } else { tr("menu.shareToLan") });
+                lan.enabled = self.local;
+                b.push(lan);
                 // Conquistas e estatísticas dependem de dados do servidor ainda não portados.
                 b.push(Button::sized(5, w / 2 - 100, h / 4 + 48 + i, 98, 20, tr("gui.achievements")).disabled());
                 b.push(Button::sized(6, w / 2 + 2, h / 4 + 48 + i, 98, 20, tr("gui.stats")).disabled());
@@ -777,6 +838,125 @@ impl Menu {
                     x.enabled = self.screen_ticks >= 20;
                 }
             }
+            Screen::Cheats => {
+                // Como o GuiShareToLan, só com o botão de comandos.
+                let onoff = tr(if self.cheats_draft { "options.on" } else { "options.off" });
+                b.push(Button::sized(103, w / 2 - 75, 100, 150, 20, format!("{} {onoff}", tr("selectWorld.allowCommands"))));
+                b.push(Button::sized(101, w / 2 - 155, h - 28, 150, 20, tr("gui.done")));
+                b.push(Button::sized(102, w / 2 + 5, h - 28, 150, 20, tr("gui.cancel")));
+            }
+            Screen::WorldList => {
+                // GuiSelectWorld.initGui + addWorldSelectionButtons.
+                let keep = self.inited.as_ref().is_some_and(|(sc, _, _)| *sc == Screen::WorldList);
+                let mut list = SlotList::new(w, h, 32, h - 64, 36);
+                list.selected = self.list.selected.min(self.worlds.len() as i32 - 1);
+                if keep {
+                    list.scroll = self.list.scroll;
+                }
+                self.list = list;
+                b.push(Button::sized(1, w / 2 - 154, h - 52, 150, 20, tr("selectWorld.select")));
+                b.push(Button::sized(3, w / 2 + 4, h - 52, 150, 20, tr("selectWorld.create")));
+                b.push(Button::sized(6, w / 2 - 154, h - 28, 72, 20, tr("selectWorld.rename")));
+                b.push(Button::sized(2, w / 2 - 76, h - 28, 72, 20, tr("selectWorld.delete")));
+                b.push(Button::sized(7, w / 2 + 4, h - 28, 72, 20, tr("selectWorld.recreate")));
+                b.push(Button::sized(0, w / 2 + 4 + 78, h - 28, 72, 20, tr("gui.cancel")));
+                let sel = self.list.selected >= 0;
+                for x in b.iter_mut().filter(|x| matches!(x.id, 1 | 2 | 6 | 7)) {
+                    x.enabled = sel;
+                }
+            }
+            Screen::CreateWorld => {
+                // GuiCreateWorld.initGui + updateDisplayState.
+                let d = self.create.clone();
+                let more = d.more;
+                let hard = d.mode == Mode::Hardcore;
+                let onoff = |v: bool| tr(if v { "options.on" } else { "options.off" });
+                let mut create = Button::sized(0, w / 2 - 155, h - 28, 150, 20, tr("selectWorld.create"));
+                create.enabled = !d.name.trim().is_empty();
+                b.push(create);
+                b.push(Button::sized(1, w / 2 + 5, h - 28, 150, 20, tr("gui.cancel")));
+                let mode = format!("{}: {}", tr("selectWorld.gameMode"), tr(&format!("selectWorld.gameMode.{}", d.mode.key())));
+                let mut gm = Button::sized(2, w / 2 - 75, 115, 150, 20, mode);
+                gm.visible = !more;
+                b.push(gm);
+                b.push(Button::sized(3, w / 2 - 75, 187, 150, 20, tr(if more { "gui.done" } else { "selectWorld.moreWorldOptions" })));
+                let mut feat = Button::sized(4, w / 2 - 155, 100, 150, 20, format!("{} {}", tr("selectWorld.mapFeatures"), onoff(d.structures)));
+                feat.visible = more;
+                b.push(feat);
+                // Baú bônus: o servidor dedicado não gera, então fica desligado.
+                let mut bonus = Button::sized(7, w / 2 + 5, 151, 150, 20, format!("{} {}", tr("selectWorld.bonusItems"), onoff(false)));
+                bonus.visible = more;
+                bonus.enabled = false;
+                b.push(bonus);
+                let ty = WORLD_TYPES[d.world_type];
+                let mut map = Button::sized(5, w / 2 + 5, 100, 150, 20, format!("{} {}", tr("selectWorld.mapType"), tr(ty.1)));
+                map.visible = more;
+                b.push(map);
+                let mut cmd = Button::sized(6, w / 2 - 155, 151, 150, 20, format!("{} {}", tr("selectWorld.allowCommands"), onoff(d.cheats && !hard)));
+                cmd.visible = more;
+                cmd.enabled = !hard;
+                b.push(cmd);
+                // Personalizar: o do superplano; o do "Personalizado" (GuiCustomizeWorldScreen) não foi portado.
+                let mut custom = Button::sized(8, w / 2 + 5, 120, 150, 20, tr("selectWorld.customizeType"));
+                custom.visible = more && matches!(ty.0, "FLAT" | "CUSTOMIZED");
+                custom.enabled = ty.0 == "FLAT";
+                b.push(custom);
+                let mut f = TextField::new(w / 2 - 100, 60, 200, 20);
+                f.focused = true;
+                f.set_text(ui, if more { &d.seed } else { &d.name });
+                self.fields = vec![f];
+            }
+            Screen::RenameWorld(i) => {
+                // GuiRenameWorld.initGui.
+                let name = self.worlds.get(i).map_or(String::new(), |x| x.name.clone());
+                let mut ok = Button::new(0, w / 2 - 100, h / 4 + 96 + 12, tr("selectWorld.renameButton"));
+                ok.enabled = !name.trim().is_empty();
+                b.push(ok);
+                b.push(Button::new(1, w / 2 - 100, h / 4 + 120 + 12, tr("gui.cancel")));
+                let mut f = TextField::new(w / 2 - 100, 60, 200, 20);
+                f.focused = true;
+                f.set_text(ui, &name);
+                self.fields = vec![f];
+            }
+            Screen::ConfirmDeleteWorld(_) => {
+                b.push(Button::sized(0, w / 2 - 155, h / 6 + 96, 150, 20, tr("selectWorld.deleteButton")));
+                b.push(Button::sized(1, w / 2 - 155 + 160, h / 6 + 96, 150, 20, tr("gui.cancel")));
+            }
+            Screen::CustomizeFlat => {
+                // GuiCreateFlatWorld.initGui: "Adicionar" e "Editar camada" ficam invisíveis na 1.8.9.
+                let keep = self.inited.as_ref().is_some_and(|(sc, _, _)| *sc == Screen::CustomizeFlat);
+                let mut list = SlotList::new(w, h, 43, h - 60, 24);
+                list.selected = self.list.selected.min(self.flat.layers.len() as i32 - 1);
+                if keep {
+                    list.scroll = self.list.scroll;
+                }
+                self.list = list;
+                let mut remove = Button::sized(4, w / 2 - 155, h - 52, 150, 20, tr("createWorld.customize.flat.removeLayer"));
+                remove.enabled = self.list.selected >= 0;
+                b.push(remove);
+                b.push(Button::sized(0, w / 2 - 155, h - 28, 150, 20, tr("gui.done")));
+                b.push(Button::sized(5, w / 2 + 5, h - 52, 150, 20, tr("createWorld.customize.presets")));
+                b.push(Button::sized(1, w / 2 + 5, h - 28, 150, 20, tr("gui.cancel")));
+            }
+            Screen::FlatPresets => {
+                // GuiFlatPresets.initGui.
+                let keep = self.inited.as_ref().is_some_and(|(sc, _, _)| *sc == Screen::FlatPresets);
+                let mut list = SlotList::new(w, h, 80, h - 37, 24);
+                list.selected = self.list.selected.min(FLAT_PRESETS.len() as i32 - 1);
+                if keep {
+                    list.scroll = self.list.scroll;
+                }
+                self.list = list;
+                let mut ok = Button::sized(0, w / 2 - 155, h - 28, 150, 20, tr("createWorld.customize.presets.select"));
+                ok.enabled = self.preset_text.len() > 1;
+                b.push(ok);
+                b.push(Button::sized(1, w / 2 + 5, h - 28, 150, 20, tr("gui.cancel")));
+                let mut f = TextField::new(50, 40, w - 100, 20);
+                f.set_max_len(1230);
+                let t = self.preset_text.clone();
+                f.set_text(ui, &t);
+                self.fields = vec![f];
+            }
             Screen::Language => {
                 b.push(Button::option(w / 2 - 155, h - 38, Opt::ForceUnicodeFont, s));
                 b.push(Button::sized(6, w / 2 - 155 + 160, h - 38, 150, 20, tr("gui.done")));
@@ -872,6 +1052,12 @@ impl Menu {
             Screen::Connecting(_) => {
                 gui::default_background(ui, w, h, in_game);
                 centered(ui, &tr("connect.connecting"), w / 2, h / 2 - 50, 0xFFFFFF);
+            }
+            Screen::LocalWorld => {
+                gui::default_background(ui, w, h, in_game);
+                centered(ui, &tr("menu.loadingLevel"), w / 2, h / 2 - 50, 0xFFFFFF);
+                let msg = self.working.1.clone();
+                centered(ui, &msg, w / 2, h / 2 - 30, 0xAAAAAA);
             }
             // drawBackground(0): sempre a terra, mesmo com o mundo carregado.
             Screen::DownloadTerrain => {
@@ -994,6 +1180,152 @@ impl Menu {
                 // GuiYesNo com a segunda linha vazia.
                 gui::default_background(ui, w, h, in_game);
                 centered(ui, &tr("deathScreen.quit.confirm"), w / 2, 70, 0xFFFFFF);
+            }
+            Screen::Cheats => {
+                gui::default_background(ui, w, h, in_game);
+                centered(ui, "Cheats", w / 2, 50, 0xFFFFFF);
+                centered(ui, &tr("selectWorld.allowCommands.info"), w / 2, 82, 0xFFFFFF);
+            }
+            Screen::WorldList => {
+                // GuiSelectWorld.drawScreen + List.drawSlot.
+                gui::default_background(ui, w, h, in_game);
+                let n = self.worlds.len();
+                self.list.draw_background(ui, n);
+                let x = self.list.entry_x(220);
+                for i in 0..n {
+                    let y = self.list.entry_y(i);
+                    if self.list.selected == i as i32 {
+                        self.list.draw_selection(ui, i, 220);
+                    }
+                    let wd = self.worlds[i].clone();
+                    let name = if wd.name.is_empty() { format!("{} {}", tr("selectWorld.world"), i + 1) } else { wd.name.clone() };
+                    let date = chrono::DateTime::from_timestamp_millis(wd.last_played as i64)
+                        .map(|d| d.with_timezone(&chrono::Local).format("%d/%m/%y %H:%M").to_string())
+                        .unwrap_or_default();
+                    let mut mode = match wd.mode {
+                        Mode::Hardcore => format!("§4{}§r", tr("gameMode.hardcore")),
+                        Mode::Creative => tr("gameMode.creative"),
+                        Mode::Survival => tr("gameMode.survival"),
+                    };
+                    if wd.cheats {
+                        mode = format!("{mode}, {}", tr("selectWorld.cheats"));
+                    }
+                    ui.text((x + 2) as f32, (y + 1) as f32, &name, 0xFFFFFF, false);
+                    ui.text((x + 2) as f32, (y + 12) as f32, &format!("{} ({date})", wd.folder), 0x808080, false);
+                    ui.text((x + 2) as f32, (y + 12 + 10) as f32, &mode, 0x808080, false);
+                }
+                self.list.draw_foreground(ui, n, w / 2 + 124);
+                centered(ui, &tr("selectWorld.title"), w / 2, 20, 0xFFFFFF);
+            }
+            Screen::CreateWorld => {
+                // GuiCreateWorld.drawScreen.
+                gui::default_background(ui, w, h, in_game);
+                centered(ui, &tr("selectWorld.create"), w / 2, 20, 0xFFFFFF);
+                let d = self.create.clone();
+                if d.more {
+                    string(ui, &tr("selectWorld.enterSeed"), w / 2 - 100, 47, 0xA0A0A0);
+                    string(ui, &tr("selectWorld.seedInfo"), w / 2 - 100, 85, 0xA0A0A0);
+                    string(ui, &tr("selectWorld.mapFeatures.info"), w / 2 - 150, 122, 0xA0A0A0);
+                    string(ui, &tr("selectWorld.allowCommands.info"), w / 2 - 150, 172, 0xA0A0A0);
+                    if WORLD_TYPES[d.world_type].0 == "AMPLIFIED" {
+                        let mut y = 100 + 22;
+                        for l in gui::wrap(ui, &tr("generator.amplified.info"), 150) {
+                            ui.text((w / 2 + 5 + 2) as f32, y as f32, &l, 0xA0A0A0, false);
+                            y += 9;
+                        }
+                    }
+                } else {
+                    string(ui, &tr("selectWorld.enterName"), w / 2 - 100, 47, 0xA0A0A0);
+                    string(ui, &format!("{} {}", tr("selectWorld.resultFolder"), d.folder), w / 2 - 100, 85, 0xA0A0A0);
+                    string(ui, &tr(&format!("selectWorld.gameMode.{}.line1", d.mode.key())), w / 2 - 100, 137, 0xA0A0A0);
+                    string(ui, &tr(&format!("selectWorld.gameMode.{}.line2", d.mode.key())), w / 2 - 100, 149, 0xA0A0A0);
+                }
+                for f in &self.fields {
+                    f.draw(ui);
+                }
+            }
+            Screen::RenameWorld(_) => {
+                gui::default_background(ui, w, h, in_game);
+                centered(ui, &tr("selectWorld.renameTitle"), w / 2, 20, 0xFFFFFF);
+                string(ui, &tr("selectWorld.enterName"), w / 2 - 100, 47, 0xA0A0A0);
+                for f in &self.fields {
+                    f.draw(ui);
+                }
+            }
+            Screen::ConfirmDeleteWorld(i) => {
+                gui::default_background(ui, w, h, in_game);
+                centered(ui, &tr("selectWorld.deleteQuestion"), w / 2, 70, 0xFFFFFF);
+                let name = self.worlds.get(i).map_or(String::new(), |s| s.name.clone());
+                let msg = format!("'{name}' {}", tr("selectWorld.deleteWarning"));
+                let mut y = 90;
+                for l in gui::wrap(ui, &msg, w - 50) {
+                    centered(ui, &l, w / 2, y, 0xFFFFFF);
+                    y += 9;
+                }
+            }
+            Screen::CustomizeFlat => {
+                // GuiCreateFlatWorld.drawScreen + Details.drawSlot: a lista vai de cima (última camada) para baixo.
+                gui::default_background(ui, w, h, in_game);
+                let n = self.flat.layers.len();
+                self.list.draw_background(ui, n);
+                let x = self.list.entry_x(220);
+                for i in 0..n {
+                    let y = self.list.entry_y(i);
+                    if self.list.selected == i as i32 {
+                        self.list.draw_selection(ui, i, 220);
+                    }
+                    let layer = self.flat.layers[n - i - 1].clone();
+                    let item = layer.icon_item();
+                    if let Some(slot) = item.and_then(|k| self.item_icons.get(&k).copied().flatten()) {
+                        ui.item_icon(slot, (x + 2) as f32, (y + 2) as f32, 16.0);
+                    }
+                    let name = match item {
+                        None => "Air".to_string(),
+                        Some(k) => self.item_names.get(&k).cloned().unwrap_or_else(|| layer.block.clone()),
+                    };
+                    ui.text((x + 18 + 5) as f32, (y + 3) as f32, &name, 0xFFFFFF, false);
+                    let key = if i == 0 {
+                        "createWorld.customize.flat.layer.top"
+                    } else if i == n - 1 {
+                        "createWorld.customize.flat.layer.bottom"
+                    } else {
+                        "createWorld.customize.flat.layer"
+                    };
+                    let hs = trf(key, &[&layer.count.to_string()]);
+                    let hw = gui::width(ui, &hs);
+                    ui.text((x + 2 + 213 - hw) as f32, (y + 3) as f32, &hs, 0xFFFFFF, false);
+                }
+                self.list.draw_foreground(ui, n, w / 2 + 124);
+                centered(ui, &tr("createWorld.customize.flat.title"), w / 2, 8, 0xFFFFFF);
+                let i = w / 2 - 92 - 16;
+                string(ui, &tr("createWorld.customize.flat.tile"), i, 32, 0xFFFFFF);
+                let hs = tr("createWorld.customize.flat.height");
+                let hw = gui::width(ui, &hs);
+                string(ui, &hs, i + 2 + 213 - hw, 32, 0xFFFFFF);
+            }
+            Screen::FlatPresets => {
+                // GuiFlatPresets.drawScreen + ListSlot.drawSlot.
+                gui::default_background(ui, w, h, in_game);
+                let n = FLAT_PRESETS.len();
+                self.list.draw_background(ui, n);
+                let x = self.list.entry_x(220);
+                for (i, (key, icon, _)) in FLAT_PRESETS.iter().enumerate() {
+                    let y = self.list.entry_y(i);
+                    if self.list.selected == i as i32 {
+                        self.list.draw_selection(ui, i, 220);
+                    }
+                    if let Some(slot) = self.item_icons.get(icon).copied().flatten() {
+                        ui.item_icon(slot, (x + 2) as f32, (y + 2) as f32, 16.0);
+                    }
+                    ui.text((x + 18 + 5) as f32, (y + 6) as f32, key, 0xFFFFFF, false);
+                }
+                self.list.draw_foreground(ui, n, w / 2 + 124);
+                centered(ui, &tr("createWorld.customize.presets.title"), w / 2, 8, 0xFFFFFF);
+                string(ui, &tr("createWorld.customize.presets.share"), 50, 30, 0xA0A0A0);
+                string(ui, &tr("createWorld.customize.presets.list"), 50, 70, 0xA0A0A0);
+                for f in &self.fields {
+                    f.draw(ui);
+                }
             }
             Screen::Language => {
                 let n = self.langs.len();
@@ -1223,6 +1555,9 @@ impl Menu {
             Screen::Video => self.rows.len().div_ceil(2),
             Screen::Controls => self.key_rows.len(),
             Screen::Language => self.langs.len(),
+            Screen::WorldList => self.worlds.len(),
+            Screen::CustomizeFlat => self.flat.layers.len(),
+            Screen::FlatPresets => FLAT_PRESETS.len(),
             _ => 0,
         }
     }
@@ -1235,7 +1570,10 @@ impl Menu {
             }
             return;
         }
-        if matches!(self.screen, Screen::ServerList | Screen::Video | Screen::Controls | Screen::Language) {
+        if matches!(
+            self.screen,
+            Screen::ServerList | Screen::Video | Screen::Controls | Screen::Language | Screen::WorldList | Screen::CustomizeFlat | Screen::FlatPresets
+        ) {
             let (_, my) = self.ints();
             if self.list.y_inside(my) {
                 let size = self.list_size();
@@ -1360,6 +1698,30 @@ impl Menu {
                 }
                 self.list.press(mx, my, 252, n, sb);
             }
+            Screen::WorldList => {
+                let n = self.worlds.len();
+                if let Some((_, double)) = self.list.press(mx, my, 220, n, self.w / 2 + 124) {
+                    // GuiSelectWorld.List.elementClicked: seleciona; o clique duplo entra.
+                    self.inited = None;
+                    if double {
+                        return self.play_selected();
+                    }
+                }
+            }
+            Screen::CustomizeFlat => {
+                let n = self.flat.layers.len();
+                if self.list.press(mx, my, 220, n, self.w / 2 + 124).is_some() {
+                    self.inited = None;
+                }
+            }
+            Screen::FlatPresets => {
+                let n = FLAT_PRESETS.len();
+                if let Some((i, _)) = self.list.press(mx, my, 220, n, self.w / 2 + 124) {
+                    // GuiFlatPresets.ListSlot.elementClicked: o texto da predefinição vai para o campo.
+                    self.preset_text = FLAT_PRESETS[i].2.to_string();
+                    self.inited = None;
+                }
+            }
             Screen::Language => {
                 let n = self.langs.len();
                 if let Some((i, _)) = self.list.press(mx, my, 220, n, self.w / 2 + 124) {
@@ -1436,6 +1798,29 @@ impl Menu {
         self.save_servers();
     }
 
+    /// O mundo escolhido na `GuiSelectWorld`.
+    fn selected_world(&self) -> Option<usize> {
+        usize::try_from(self.list.selected).ok().filter(|i| *i < self.worlds.len())
+    }
+
+    /// `GuiSelectWorld.func_146615_e`: entra no mundo escolhido.
+    fn play_selected(&mut self) -> Option<Action> {
+        let folder = self.worlds.get(self.selected_world()?)?.folder.clone();
+        self.local = true;
+        self.working.1.clear();
+        self.show(Screen::LocalWorld);
+        Some(Action::PlayWorld(folder))
+    }
+
+    /// Itens com ícone nas telas do superplano (o jogo prepara os ícones e os nomes).
+    pub fn wanted_items(&self) -> Vec<(i16, i16)> {
+        match self.screen {
+            Screen::CustomizeFlat => self.flat.layers.iter().filter_map(|l| l.icon_item()).collect(),
+            Screen::FlatPresets => FLAT_PRESETS.iter().map(|p| p.1).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     fn connect_selected(&mut self) -> Option<Action> {
         let i = self.list.selected;
         let ip = self.servers.get(i.max(0) as usize).filter(|_| i >= 0).map(|s| s.ip.clone())?;
@@ -1446,7 +1831,15 @@ impl Menu {
     fn action(&mut self, ui: &mut UiBatch, id: i32, kind: Kind) -> Option<Action> {
         match self.screen.clone() {
             Screen::MainMenu => match id {
-                2 => self.open(Screen::ServerList),
+                1 => {
+                    self.worlds = crate::worlds::list();
+                    self.list.selected = -1;
+                    self.open(Screen::WorldList);
+                }
+                2 => {
+                    self.local = false;
+                    self.open(Screen::ServerList);
+                }
                 14 => {
                     self.login_status.clear();
                     self.open(Screen::Login);
@@ -1456,6 +1849,153 @@ impl Menu {
                 5 => self.open(Screen::Language),
                 _ => {}
             },
+            Screen::Cheats => match id {
+                103 => {
+                    self.cheats_draft = !self.cheats_draft;
+                    self.inited = None;
+                }
+                101 => {
+                    // GuiShareToLan: confirmar volta direto ao jogo.
+                    self.stack.clear();
+                    self.screen = Screen::None;
+                    self.inited = None;
+                    return Some(Action::SetCheats(self.cheats_draft));
+                }
+                102 => self.back(),
+                _ => {}
+            },
+            Screen::WorldList => match id {
+                1 => return self.play_selected(),
+                3 => {
+                    self.create = CreateDraft::new();
+                    self.open(Screen::CreateWorld);
+                }
+                6 => {
+                    if let Some(i) = self.selected_world() {
+                        self.open(Screen::RenameWorld(i));
+                    }
+                }
+                2 => {
+                    if let Some(i) = self.selected_world() {
+                        self.open(Screen::ConfirmDeleteWorld(i));
+                    }
+                }
+                7 => {
+                    // GuiCreateWorld.recreateFromExistingWorld: cópia com a mesma semente e as mesmas opções.
+                    if let Some(i) = self.selected_world() {
+                        self.create = CreateDraft::recreate(&self.worlds[i]);
+                        self.open(Screen::CreateWorld);
+                    }
+                }
+                0 => self.back(),
+                _ => {}
+            },
+            Screen::CreateWorld => {
+                let d = &mut self.create;
+                match id {
+                    0 => {
+                        let name = d.name.trim().to_string();
+                        if name.is_empty() {
+                            return None;
+                        }
+                        let new = NewWorld {
+                            name,
+                            seed: d.seed.trim().to_string(),
+                            mode: d.mode,
+                            structures: d.structures,
+                            world_type: d.world_type,
+                            cheats: d.cheats && d.mode != Mode::Hardcore,
+                            generator: d.generator.clone(),
+                        };
+                        let folder = crate::worlds::folder_for(&new.name);
+                        self.local = true;
+                        self.working.1.clear();
+                        self.show(Screen::LocalWorld);
+                        return Some(Action::CreateWorld(folder, new));
+                    }
+                    1 => {
+                        self.back();
+                        return None;
+                    }
+                    2 => {
+                        d.mode = d.mode.next();
+                        if !d.cheats_set {
+                            d.cheats = d.mode == Mode::Creative;
+                        }
+                    }
+                    3 => d.more = !d.more,
+                    4 => d.structures = !d.structures,
+                    5 => d.world_type = (d.world_type + 1) % WORLD_TYPES.len(),
+                    6 => {
+                        d.cheats = !d.cheats;
+                        d.cheats_set = true;
+                    }
+                    8 => {
+                        self.flat = Flat::parse(&self.create.generator);
+                        self.list.selected = -1;
+                        self.open(Screen::CustomizeFlat);
+                        return None;
+                    }
+                    _ => {}
+                }
+                self.inited = None;
+            }
+            Screen::RenameWorld(i) => {
+                if id == 0 {
+                    let name = self.fields.first().map(|f| f.text.trim().to_string()).unwrap_or_default();
+                    if let Some(wd) = self.worlds.get_mut(i).filter(|_| !name.is_empty()) {
+                        wd.name = name;
+                        let _ = wd.save();
+                    }
+                }
+                self.worlds = crate::worlds::list();
+                self.back();
+            }
+            Screen::ConfirmDeleteWorld(i) => {
+                if id == 0 {
+                    if let Some(wd) = self.worlds.get(i) {
+                        if let Err(e) = crate::worlds::delete(&wd.folder) {
+                            eprintln!("não deu para excluir o mundo {}: {e}", wd.folder);
+                        }
+                    }
+                    self.list.selected = -1;
+                }
+                self.worlds = crate::worlds::list();
+                self.back();
+            }
+            Screen::CustomizeFlat => match id {
+                4 => {
+                    // GuiCreateFlatWorld.func_146375_g: tira a camada escolhida (a lista vai de cima para baixo).
+                    let n = self.flat.layers.len();
+                    if let Ok(sel) = usize::try_from(self.list.selected) {
+                        if sel < n {
+                            self.flat.layers.remove(n - sel - 1);
+                            self.list.selected = self.list.selected.min(n as i32 - 2);
+                        }
+                    }
+                    self.inited = None;
+                }
+                0 => {
+                    self.create.generator = self.flat.to_text();
+                    self.back();
+                }
+                5 => {
+                    self.preset_text = self.flat.to_text();
+                    self.list.selected = -1;
+                    self.open(Screen::FlatPresets);
+                }
+                1 => self.back(),
+                _ => {}
+            },
+            Screen::FlatPresets => {
+                if id == 0 {
+                    self.flat = Flat::parse(&self.preset_text);
+                }
+                if id <= 1 {
+                    self.list.selected = -1;
+                    self.back();
+                }
+            }
             Screen::ServerList => match id {
                 2 => {
                     let i = self.list.selected;
@@ -1594,8 +2134,12 @@ impl Menu {
                 return Some(Action::ServerPackAnswer(url, hash, id == 0));
             }
             Screen::Connecting(_) => {
-                self.show(Screen::ServerList);
+                self.show(if self.local { Screen::MainMenu } else { Screen::ServerList });
                 return Some(Action::Disconnect);
+            }
+            Screen::LocalWorld => {
+                self.show(Screen::MainMenu);
+                return Some(Action::CancelSingleplayer);
             }
             Screen::Working | Screen::DownloadTerrain => {}
             Screen::GameOver => match id {
@@ -1616,9 +2160,13 @@ impl Menu {
                 return Some(Action::Respawn);
             }
             Screen::Disconnected(..) => {
-                self.show(Screen::ServerList);
+                self.show(if self.local { Screen::MainMenu } else { Screen::ServerList });
             }
             Screen::Pause => match id {
+                7 if self.local => {
+                    self.cheats_draft = self.local_cheats;
+                    self.open(Screen::Cheats);
+                }
                 0 => self.open(Screen::Options),
                 1 => return Some(Action::Disconnect),
                 4 => {
@@ -1745,6 +2293,49 @@ impl Menu {
                 }
                 None
             }
+            Screen::CreateWorld | Screen::RenameWorld(_) | Screen::FlatPresets => {
+                if code == KeyCode::Escape {
+                    self.back();
+                    return None;
+                }
+                if matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) && self.screen != Screen::FlatPresets {
+                    if self.buttons.first().is_some_and(|b| b.enabled) {
+                        return self.action(ui, 0, Kind::Plain);
+                    }
+                    return None;
+                }
+                for f in &mut self.fields {
+                    f.key(ui, code, text, ctrl, shift);
+                }
+                let t = self.fields.first().map(|f| f.text.clone()).unwrap_or_default();
+                let ok = match self.screen {
+                    Screen::CreateWorld if self.create.more => {
+                        self.create.seed = t;
+                        !self.create.name.trim().is_empty()
+                    }
+                    Screen::CreateWorld => {
+                        // GuiCreateWorld.calcSaveDirName a cada tecla.
+                        self.create.folder = crate::worlds::folder_for(&t);
+                        self.create.name = t;
+                        !self.create.name.trim().is_empty()
+                    }
+                    Screen::FlatPresets => {
+                        self.preset_text = t;
+                        self.preset_text.len() > 1
+                    }
+                    _ => !t.trim().is_empty(),
+                };
+                if let Some(b) = self.buttons.first_mut() {
+                    b.enabled = ok;
+                }
+                None
+            }
+            Screen::WorldList | Screen::CustomizeFlat | Screen::Cheats => {
+                if code == KeyCode::Escape {
+                    self.back();
+                }
+                None
+            }
             Screen::AddServer(_) | Screen::DirectConnect => {
                 if code == KeyCode::Escape {
                     return self.close();
@@ -1813,7 +2404,7 @@ impl Menu {
                 }
             }
             // GuiMainMenu, GuiConnecting e GuiGameOver ignoram o Esc.
-            Screen::MainMenu | Screen::Connecting(_) | Screen::DownloadTerrain | Screen::None | Screen::ServerPack(..) | Screen::Working | Screen::GameOver => None,
+            Screen::MainMenu | Screen::Connecting(_) | Screen::LocalWorld | Screen::DownloadTerrain | Screen::None | Screen::ServerPack(..) | Screen::Working | Screen::GameOver => None,
             _ => {
                 if code == KeyCode::Escape {
                     self.close()
@@ -1996,5 +2587,57 @@ mod tests {
         assert_eq!(add[2], (2, w / 2 - 100, h / 4 + 72, 200, 20));
         let lang = layout(Screen::Language, false, w, h);
         assert_eq!(lang[1], (6, w / 2 + 5, h - 38, 150, 20));
+    }
+}
+
+/// Escolhas do `GuiCreateWorld`.
+#[derive(Clone, Debug)]
+struct CreateDraft {
+    name: String,
+    /// `saveDirName` mostrado embaixo do nome.
+    folder: String,
+    seed: String,
+    mode: Mode,
+    structures: bool,
+    world_type: usize,
+    cheats: bool,
+    /// `allowCheatsWasSetByUser`: trocar o modo não mexe mais nos comandos.
+    cheats_set: bool,
+    /// `inMoreWorldOptionsMode`.
+    more: bool,
+    generator: String,
+}
+
+impl CreateDraft {
+    fn new() -> Self {
+        let name = tr("selectWorld.newWorld");
+        CreateDraft {
+            folder: crate::worlds::folder_for(&name),
+            name,
+            seed: String::new(),
+            mode: Mode::Survival,
+            structures: true,
+            world_type: 0,
+            cheats: false,
+            cheats_set: false,
+            more: false,
+            generator: crate::worlds::DEFAULT_FLAT.to_string(),
+        }
+    }
+
+    fn recreate(w: &WorldEntry) -> Self {
+        let name = trf("selectWorld.newWorld.copyOf", &[&w.name]);
+        CreateDraft {
+            folder: crate::worlds::folder_for(&name),
+            name,
+            seed: w.seed().map(|s| s.to_string()).unwrap_or_default(),
+            mode: w.mode,
+            structures: w.structures,
+            world_type: w.world_type,
+            cheats: w.cheats,
+            cheats_set: true,
+            more: false,
+            generator: if w.generator.is_empty() { crate::worlds::DEFAULT_FLAT.to_string() } else { w.generator.clone() },
+        }
     }
 }

@@ -95,6 +95,20 @@ pub fn jar(explicit: Option<&str>) -> Result<PathBuf, BoxErr> {
     Ok(mine)
 }
 
+/// O servidor oficial 1.8.9 (para o modo Um jogador): baixado uma vez para `<dados>/server`, SHA-1 conferido.
+pub fn server_jar() -> Result<PathBuf, BoxErr> {
+    let dst = data_dir().join("server/minecraft_server.1.8.9.jar");
+    if dst.is_file() {
+        return Ok(dst);
+    }
+    println!("Baixando o servidor 1.8.9 da Mojang (uma vez)...");
+    let v = version_json()?;
+    let s = &v["downloads"]["server"];
+    let sha1 = s["sha1"].as_str().filter(|h| h.len() == 40).ok_or("sem SHA-1 do servidor no JSON da versão")?;
+    download_checked(s["url"].as_str().ok_or("sem servidor no JSON da versão")?, sha1, &dst, 64 << 20)?;
+    Ok(dst)
+}
+
 /// Os assets (índice 1.8): os de um launcher ou, sem nenhum, baixados para a pasta de dados. Define
 /// `MINE_RS_ASSETS` para o resto do jogo achar a pasta.
 pub fn assets() -> Result<(), BoxErr> {

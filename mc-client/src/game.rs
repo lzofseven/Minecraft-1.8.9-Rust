@@ -151,6 +151,11 @@ struct Game {
     session: Option<Session>,
     /// Login Microsoft em andamento (código de dispositivo).
     login_rx: Option<mpsc::Receiver<crate::msa::Event>>,
+    /// Um jogador: o servidor oficial rodando em 127.0.0.1, a preparação em andamento e a parada do anterior
+    /// (salvando o mundo).
+    local: Option<crate::singleplayer::LocalServer>,
+    local_rx: Option<mpsc::Receiver<crate::singleplayer::Event>>,
+    local_stopping: Option<std::thread::JoinHandle<()>>,
     menu: crate::menu::Menu,
     stdin_rx: mpsc::Receiver<String>,
     next_favicon: u32,
@@ -365,6 +370,9 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
         name: opts.session.as_ref().map_or(opts.name, |s| s.name.clone()),
         session: opts.session,
         login_rx: None,
+        local: None,
+        local_rx: None,
+        local_stopping: None,
         menu,
         stdin_rx,
         next_favicon: mc_render::ui::ITEM_SLOTS - 1,
@@ -488,6 +496,13 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now()));
     event_loop.run_app(&mut game)?;
     game.far.save(true);
+    // Um jogador: o servidor salva o mundo antes de o processo terminar.
+    if let Some(srv) = game.local.take() {
+        srv.stop();
+    }
+    if let Some(h) = game.local_stopping.take() {
+        let _ = h.join();
+    }
     if let Some(r) = game.exit_reason {
         println!("desconectado: {}", crate::hud::plain(&r));
     }
@@ -1676,6 +1691,7 @@ impl Game {
     fn update(&mut self, el: &ActiveEventLoop) {
         self.poll_server_pack();
         self.poll_login();
+        self.poll_local();
         if let Some(reason) = self.pump_network() {
             println!("desconectado: {}", crate::hud::plain(&reason));
             // GuiDisconnected: "Conexão perdida" em jogo, "Falha ao conectar" antes de entrar.
@@ -2073,6 +2089,20 @@ impl Game {
         }
         if self.menu.screen != crate::menu::Screen::None {
             self.update_favicons();
+            // Ícones e nomes dos blocos das telas do superplano.
+            for k in self.menu.wanted_items() {
+                if self.menu.item_icons.contains_key(&k) {
+                    continue;
+                }
+                let key = (k.0, k.1, 0);
+                if !self.icon_map.contains_key(&key) {
+                    self.ensure_icon(key);
+                }
+                self.menu.item_icons.insert(k, self.icon_map.get(&key).copied());
+                if let Some(n) = self.lang.item_name(k.0, k.1) {
+                    self.menu.item_names.insert(k, n);
+                }
+            }
             let (w, h) = (size.0 as f32 / gui_scale, size.1 as f32 / gui_scale);
             self.menu.in_game = self.spawned;
             self.menu.draw(&mut self.ui, w, h);
@@ -3278,6 +3308,12 @@ impl Game {
     /// Sai do servidor e mostra `screen` (lista ou motivo da desconexão).
     fn leave(&mut self, screen: crate::menu::Screen) {
         self.net = None;
+        // Saiu do mundo local (não é só o `join` trocando de conexão): salva e para o servidor em segundo plano.
+        if !matches!(screen, crate::menu::Screen::Connecting(_)) {
+            if let Some(srv) = self.local.take() {
+                self.local_stopping = Some(crate::singleplayer::stop_async(srv));
+            }
+        }
         // NetHandlerPlayClient novo a cada conexão: o playerInfoMap (lista do tab) começa vazio. O reset_world
         // só limpa as entidades do mundo (o S01/S07 da mesma conexão mantém a lista), então os nicks do servidor
         // anterior ficavam no tab do próximo.
@@ -3384,6 +3420,35 @@ impl Game {
         self.applied = Some(s);
     }
 
+    /// Um jogador: sobe o servidor do mundo (depois de o anterior terminar de salvar).
+    fn start_local(&mut self, world: crate::singleplayer::Launch) {
+        let view = self.menu.settings.render_distance.clamp(2, 32) as u8;
+        self.local_rx = Some(crate::singleplayer::start(self.name.clone(), view, self.local_stopping.take(), world));
+    }
+
+    /// Um jogador: progresso do servidor local e, quando pronto, a conexão a ele.
+    fn poll_local(&mut self) {
+        let Some(rx) = &self.local_rx else { return };
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                crate::singleplayer::Event::Status(s) => self.menu.working.1 = s,
+                crate::singleplayer::Event::Ready(srv) => {
+                    self.local_rx = None;
+                    self.menu.local_cheats = crate::worlds::WorldEntry::load(&srv.folder).is_some_and(|w| w.cheats);
+                    self.join(srv.addr());
+                    self.local = Some(srv);
+                    return;
+                }
+                crate::singleplayer::Event::Failed(e) => {
+                    eprintln!("[um jogador] {e}");
+                    self.local_rx = None;
+                    self.menu.show(crate::menu::Screen::Disconnected("connect.failed".to_string(), e));
+                    return;
+                }
+            }
+        }
+    }
+
     /// O login Microsoft avisa o código e depois a conta (ou o erro).
     fn poll_login(&mut self) {
         let Some(rx) = &self.login_rx else { return };
@@ -3441,7 +3506,29 @@ impl Game {
                 self.menu.screen = crate::menu::Screen::None;
                 self.set_grab(true);
             }
-            Some(crate::menu::Action::Disconnect) => self.leave(crate::menu::Screen::ServerList),
+            Some(crate::menu::Action::Disconnect) => {
+                let back = if self.menu.local { crate::menu::Screen::MainMenu } else { crate::menu::Screen::ServerList };
+                self.leave(back);
+            }
+            Some(crate::menu::Action::SetCheats(on)) => {
+                if let Some(srv) = &mut self.local {
+                    // "Permitir comandos" é ser operador no servidor local; fica gravado no mundo.
+                    srv.command(&format!("{} {}", if on { "op" } else { "deop" }, self.name));
+                    if let Some(mut w) = crate::worlds::WorldEntry::load(&srv.folder) {
+                        w.cheats = on;
+                        let _ = w.save();
+                    }
+                    self.menu.local_cheats = on;
+                    let msg = if on { "Cheats ativados: comandos como /gamemode e /xp liberados." } else { "Cheats desativados." };
+                    self.hud.add_chat(&mut self.ui, &crate::chat::Component::text(msg));
+                }
+                self.menu.screen = crate::menu::Screen::None;
+                self.set_grab(true);
+            }
+            Some(crate::menu::Action::PlayWorld(folder)) => self.start_local(crate::singleplayer::Launch { folder, new: None }),
+            Some(crate::menu::Action::CreateWorld(folder, new)) => self.start_local(crate::singleplayer::Launch { folder, new: Some(new) }),
+            // A thread termina sozinha; o servidor que ela subir é parado ao cair no canal fechado.
+            Some(crate::menu::Action::CancelSingleplayer) => self.local_rx = None,
             Some(crate::menu::Action::Respawn) => self.send(serverbound::client_status(serverbound::STATUS_PERFORM_RESPAWN)),
             Some(crate::menu::Action::ToTitle) => self.leave(crate::menu::Screen::MainMenu),
             Some(crate::menu::Action::ReloadResources) => self.reload_resources(),
@@ -4176,6 +4263,13 @@ impl ApplicationHandler for Game {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                // Minecraft.dispatchKeypresses: a tela cheia (F11) vale em qualquer tela, menu ou jogo.
+                if event.state == ElementState::Pressed && !event.repeat && self.is_bind("key.fullscreen", code) {
+                    self.menu.settings.fullscreen ^= true;
+                    self.menu.settings.save();
+                    self.menu.refresh_options();
+                    return;
+                }
                 {
                     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
                     crate::settings::learn_key(code, &event.key_without_modifiers());
@@ -4279,10 +4373,6 @@ impl ApplicationHandler for Game {
                             self.hud.show_tab = true;
                         } else if let Some(n) = (1..=9).position(|i| self.is_bind(&format!("key.hotbar.{i}"), code)) {
                             self.select_slot(n as u8);
-                        } else if self.is_bind("key.fullscreen", code) && !event.repeat {
-                            // Minecraft.toggleFullscreen também grava a opção.
-                            self.menu.settings.fullscreen ^= true;
-                            self.menu.settings.save();
                         }
                         if self.grabbed {
                             self.keys.insert(code);

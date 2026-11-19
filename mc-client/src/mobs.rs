@@ -543,8 +543,7 @@ pub fn draw(e: &Entity, id: u8, pos: Vec3, t: f32, anim: &Anim, body: f32, death
                     // LayerCreeperCharge: ModelCreeper(2.0), textura rolando ticks*0.01, cor 0.5, sem luz
                     // (`disableLighting`) e `blendFunc(1, 1)`.
                     let mut charged = Rig::new(&g::CREEPER_CHARGED);
-                    charged.rot = rig.rot.clone();
-                    debug_assert_eq!(charged.rot.len(), rig.rot.len());
+                    charged.copy_pose(&rig);
                     let mut tmp = Geometry::default();
                     let mut sink = Sink { geo: &mut tmp, tex: (64.0, 32.0), tint: [0.5; 3], alpha: 255, light: FULL_LIGHT, lights: WORLD_LIGHTS };
                     charged.emit(&mut sink, &m, &roots);
@@ -610,8 +609,7 @@ pub fn draw(e: &Entity, id: u8, pos: Vec3, t: f32, anim: &Anim, body: f32, death
             if id == 90 && e.meta_byte(16) == 1 {
                 if let Some(saddle) = cx.textures.jar(cx.r, cx.jar, "entity/pig/pig_saddle") {
                     let mut sr = Rig::new(&g::PIG_SADDLE);
-                    sr.rot = rig.rot.clone();
-                    sr.pivot = rig.pivot.clone();
+                    sr.copy_pose(&rig);
                     emit_quadruped(&sr, &mut cx.sink(saddle, tint, 255, light), &m, child, cy, cz);
                 }
             }
@@ -619,8 +617,7 @@ pub fn draw(e: &Entity, id: u8, pos: Vec3, t: f32, anim: &Anim, body: f32, death
                 if let Some(fur) = cx.textures.jar(cx.r, cx.jar, "entity/sheep/sheep_fur") {
                     let c = g::SHEEP_COLORS[(e.meta_byte(16) & 15) as usize];
                     let mut wr = Rig::new(&g::SHEEP_WOOL);
-                    wr.rot = rig.rot.clone();
-                    wr.pivot = rig.pivot.clone();
+                    wr.copy_pose(&rig);
                     emit_quadruped(&wr, &mut cx.sink(fur, [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2]], 255, light), &m, child, cy, cz);
                 }
             }
