@@ -53,6 +53,8 @@ pub struct Options {
     pub login: bool,
     /// Aviso do login que falhou ao abrir (token vencido sem renovação, por exemplo).
     pub login_error: Option<String>,
+    /// Aviso que não impede de jogar (sons ou idiomas que não baixaram).
+    pub notice: Option<String>,
 }
 
 /// Automação do mundo de teste (ver `test_world`).
@@ -328,6 +330,9 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
     menu.show(screen);
     menu.account = if opts.login { String::new() } else { opts.session.as_ref().map_or(opts.name.clone(), |s| s.name.clone()) };
     menu.login_status = opts.login_error.iter().cloned().collect();
+    if let Some(n) = opts.notice {
+        menu.notice = n;
+    }
     // Só para prints das telas sem entrar em servidor: MINE_RS_TELA=pausa|conectando|opcoes|video.
     match std::env::var("MINE_RS_TELA").as_deref() {
         Ok("pausa") => menu.show(crate::menu::Screen::Pause),
@@ -489,7 +494,14 @@ pub fn run(opts: Options) -> Result<(), BoxErr> {
     event_loop.run_app(&mut game)?;
     game.far.save(true);
     if let Some(r) = game.exit_reason {
-        println!("desconectado: {}", crate::hud::plain(&r));
+        let detail = crate::hud::plain(&r);
+        eprintln!("vídeo: {detail}");
+        let log = crate::setup::data_dir().join("mine-rs.log");
+        return Err(format!(
+            "Não foi possível abrir o jogo. A placa de vídeo ou o driver pode ser incompatível. Atualize o driver da placa e tente de novo.\n\nO detalhe ficou em:\n{}",
+            log.display()
+        )
+        .into());
     }
     Ok(())
 }
@@ -3390,7 +3402,14 @@ impl Game {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 crate::msa::Event::Code { url, code } => {
-                    self.menu.login_status = vec![format!("Abra {url}"), format!("e digite o código: {code}"), "Esperando a aprovação...".to_string()];
+                    let _ = crate::desktop::open_url(&url);
+                    let copied = crate::desktop::set(&code);
+                    let mut lines = vec![format!("Abra {url}"), format!("e digite o código: {code}")];
+                    if copied {
+                        lines.push("O código foi copiado.".into());
+                    }
+                    lines.push("Esperando a aprovação...".into());
+                    self.menu.login_status = lines;
                 }
                 crate::msa::Event::Done(Ok(acc)) => {
                     self.use_account(&acc);

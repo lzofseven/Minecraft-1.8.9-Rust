@@ -203,13 +203,13 @@ fn main() {
         ["join", addr] => who(&args).and_then(|w| join_headless(addr, &w.name, w.session)),
         [] | ["play"] | ["play", _] | [_] if !matches!(positional.first(), Some(&"ping") | Some(&"join")) => who(&args).and_then(|w| {
             let jar = setup::jar(flag(&args, "--jar"))?;
-            setup::assets()?;
+            let notice = setup::assets()?;
             winapp::progress_done();
             // Sem servidor: abre o menu principal (ou a tela de conta, sem conta).
             let server = positional.iter().copied().find(|a| *a != "play").map(str::to_string);
             let test_world = args.iter().any(|a| a == "--test-world");
             let login = w.login && server.is_none() && !test_world;
-            game::run(game::Options { server, name: w.name, session: w.session, jar, test_world, login, login_error: w.error })
+            game::run(game::Options { server, name: w.name, session: w.session, jar, test_world, login, login_error: w.error, notice })
         }),
         _ => {
             eprintln!("{USAGE}");

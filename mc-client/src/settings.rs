@@ -305,7 +305,7 @@ impl Default for Settings {
             resource_packs: Vec::new(),
             incompatible_resource_packs: Vec::new(),
             last_server: String::new(),
-            language: "en_US".into(),
+            language: "pt_BR".into(),
             chat_visibility: 0,
             chat_colors: true,
             chat_links: true,
@@ -1177,6 +1177,10 @@ key_key.sprint:33\nkey_key.hotbar.8:-96\nkey_of.key.zoom:0\nsoundCategory_master
         let s = Settings { gui_scale: 2, ..Default::default() };
         assert_eq!(s.scale_for(1920, 1080), 2);
         let auto = Settings::default();
+        assert_eq!(auto.language, "pt_BR");
+        let mut escolhido = Settings::default();
+        escolhido.parse("lang:en_US\n");
+        assert_eq!(escolhido.language, "en_US");
         assert_eq!(auto.scale_for(1920, 1080), 4);
         assert_eq!(auto.scale_for(1280, 720), 3);
         assert_eq!(auto.scale_for(800, 600), 2);

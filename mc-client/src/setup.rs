@@ -69,6 +69,26 @@ fn download_checked(url: &str, sha1: &str, dst: &Path, limit: u64) -> Result<(),
     Ok(())
 }
 
+/// Falha de rede (DNS, timeout, conexão). O texto do `ureq` fica no log; a tela leva uma frase curta.
+fn sem_rede(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    ["dns", "resolve", "timed out", "timeout", "connection", "network", "handshake", "lookup address"]
+        .iter()
+        .any(|p| m.contains(p))
+}
+
+/// Fecha o console de progresso, grava o detalhe e devolve o que a caixa de erro mostra.
+fn download_fail(e: BoxErr) -> BoxErr {
+    let detail = e.to_string();
+    eprintln!("download: {detail}");
+    crate::winapp::progress_done();
+    if sem_rede(&detail) {
+        "Sem conexão com a internet. Verifique a rede e abra o jogo de novo.".into()
+    } else {
+        detail.into()
+    }
+}
+
 /// O JSON da versão 1.8.9 pelo manifesto da Mojang.
 fn version_json() -> Result<Value, BoxErr> {
     let m: Value = agent().get(MANIFEST).call()?.into_json()?;
@@ -89,28 +109,28 @@ pub fn jar(explicit: Option<&str>) -> Result<PathBuf, BoxErr> {
     }
     crate::winapp::progress_console();
     println!("Baixando o Minecraft 1.8.9 da Mojang (uma vez)...");
-    let v = version_json()?;
+    let v = version_json().map_err(download_fail)?;
     let c = &v["downloads"]["client"];
-    download_checked(c["url"].as_str().ok_or("sem jar no JSON da versão")?, c["sha1"].as_str().unwrap_or_default(), &mine, 64 << 20)?;
+    download_checked(c["url"].as_str().ok_or("sem jar no JSON da versão")?, c["sha1"].as_str().unwrap_or_default(), &mine, 64 << 20).map_err(download_fail)?;
     Ok(mine)
 }
 
 /// Os assets (índice 1.8): os de um launcher ou, sem nenhum, baixados para a pasta de dados. Define
 /// `MINE_RS_ASSETS` para o resto do jogo achar a pasta.
-pub fn assets() -> Result<(), BoxErr> {
+pub fn assets() -> Result<Option<String>, BoxErr> {
     if mc_render::resources::find_assets_dir().is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let dir = data_dir().join("assets");
     let index_path = dir.join("indexes/1.8.json");
     if !index_path.is_file() {
         crate::winapp::progress_console();
         println!("Baixando o índice de sons e idiomas da Mojang (uma vez)...");
-        let v = version_json()?;
+        let v = version_json().map_err(download_fail)?;
         let ai = &v["assetIndex"];
-        download_checked(ai["url"].as_str().ok_or("sem índice de assets")?, ai["sha1"].as_str().unwrap_or_default(), &index_path, 8 << 20)?;
+        download_checked(ai["url"].as_str().ok_or("sem índice de assets")?, ai["sha1"].as_str().unwrap_or_default(), &index_path, 8 << 20).map_err(download_fail)?;
     }
-    let index: Value = serde_json::from_slice(&std::fs::read(&index_path)?)?;
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).map_err(|e| download_fail(e.into()))?).map_err(|e| download_fail(e.into()))?;
     let objects: Vec<(String, u64)> = index["objects"]
         .as_object()
         .map(|o| o.values().filter_map(|v| Some((v["hash"].as_str()?.to_string(), v["size"].as_u64().unwrap_or(0)))).collect())
@@ -152,8 +172,22 @@ pub fn assets() -> Result<(), BoxErr> {
         }
         if let Some(e) = errors.lock().ok().and_then(|v| v.first().cloned()) {
             eprintln!("alguns assets não baixaram ({e}); o jogo segue sem eles");
+            std::env::set_var("MINE_RS_ASSETS", &dir);
+            return Ok(Some("Alguns sons ou idiomas não baixaram. O jogo abre assim mesmo.".into()));
         }
     }
     std::env::set_var("MINE_RS_ASSETS", &dir);
-    Ok(())
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sem_rede;
+
+    #[test]
+    fn reconhece_falha_de_rede() {
+        assert!(sem_rede("Dns Failed: resolve dns name 'piston-meta.mojang.com:443'"));
+        assert!(sem_rede("connection timed out"));
+        assert!(!sem_rede("SHA-1 diferente em https://example"));
+    }
 }

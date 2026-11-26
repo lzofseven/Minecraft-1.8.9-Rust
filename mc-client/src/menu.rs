@@ -134,6 +134,8 @@ pub struct Menu {
     /// Há um mundo carregado (`mc.theWorld != null`).
     pub in_game: bool,
     pub splash: String,
+    /// Aviso discreto (download incompleto). Não bloqueia o jogo.
+    pub notice: String,
     /// Sons de interface a tocar (o jogo esvazia).
     pub sounds: Vec<&'static str>,
     /// O idioma mudou (o jogo recarrega os nomes).
@@ -314,6 +316,7 @@ impl Menu {
             mouse: (0.0, 0.0),
             in_game: false,
             splash: String::new(),
+            notice: String::new(),
             sounds: Vec::new(),
             language_changed: false,
             packs: None,
@@ -511,7 +514,7 @@ impl Menu {
         match self.screen.clone() {
             Screen::None => {}
             Screen::MainMenu => {
-                // GuiMainMenu.initGui + addSingleplayerMultiplayerButtons (sem mundo local: desativado).
+                // Sem mundo local: o botão fica desligado. O aviso está em `draw_main_menu`.
                 let j = h / 4 + 48;
                 b.push(Button::new(1, w / 2 - 100, j, tr("menu.singleplayer")).disabled());
                 b.push(Button::new(2, w / 2 - 100, j + 24, tr("menu.multiplayer")));
@@ -849,6 +852,9 @@ impl Menu {
                     centered(ui, &l, w / 2, y, 0xFFFFFF);
                     y += 12;
                 }
+                if !self.notice.is_empty() {
+                    centered(ui, &self.notice, w / 2, h - 14, 0xE0E080);
+                }
             }
             Screen::DirectConnect => {
                 gui::default_background(ui, w, h, in_game);
@@ -1051,6 +1057,10 @@ impl Menu {
         ui.transform = Some([cos * f, sin * f, -sin * f, cos * f, (w / 2 + 90) as f32, 70.0]);
         centered(ui, &splash, 0, -8, 0xFFFF00);
         ui.transform = None;
+        if !self.notice.is_empty() {
+            centered(ui, &self.notice, w / 2, h - 22, 0xE0E080);
+        }
+        centered(ui, "Por enquanto só dá para jogar em servidor.", w / 2, h - 34, 0xA0A0A0);
         string(ui, "Minecraft 1.8.9", 2, h - 10, 0xFFFFFF);
         let c = "Copyright Mojang AB. Do not distribute!";
         let cw = gui::width(ui, c);
